@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferops-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inferops-gateway
+  template:
+    metadata:
+      labels:
+        app: inferops-gateway
+    spec:
+      containers:
+        - name: backend
+          image: inferops-ai-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DEFAULT_PROVIDER
+              value: "mock"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inferops-gateway
+spec:
+  selector:
+    app: inferops-gateway
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000

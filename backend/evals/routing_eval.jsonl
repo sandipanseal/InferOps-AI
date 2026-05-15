@@ -1,0 +1,3 @@
+{"input":"Classify this ticket as billing or technical","task_type":"classification","expected_model":"mock-cheap"}
+{"input":"Analyze this complex contract and identify legal risks","task_type":"analysis","priority":"quality_optimized","expected_provider":"openai"}
+{"input":"My IBAN is DE89370400440532013000, summarize this","task_type":"simple_summary","privacy":"sensitive","expected_provider":"ollama"}

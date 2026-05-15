@@ -1,0 +1,7 @@
+routing:
+  complexity_threshold_low: 0.35
+  complexity_threshold_high: 0.75
+  premium_budget_remaining_threshold: 0.20
+  enable_fallback: true
+  enable_cache: false
+  enable_pii_redaction: true

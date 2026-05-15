@@ -1,0 +1,126 @@
+{
+  "id": null,
+  "uid": "inferops-ai-overview",
+  "title": "InferOps AI - LLM Deployment Overview",
+  "tags": ["inferops", "llmops", "ai-deployment"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total LLM Requests",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_requests_total[$__range]))",
+          "legendFormat": "requests"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Estimated Cost",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_llm_cost_usd_total[$__range]))",
+          "legendFormat": "cost"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Safety Blocks",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_safety_blocks_total[$__range]))",
+          "legendFormat": "blocks"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "RAG Queries",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_rag_queries_total[$__range]))",
+          "legendFormat": "rag"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by Model",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (model) (increase(inferops_requests_total[$__range]))",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95 by Model",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95,sum by (le, model) (rate(inferops_request_latency_ms_bucket[5m]))))",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cost by Model",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (model) (increase(inferops_request_cost_usd_total[$__range]))",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache Hits vs Misses",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_cache_hits_total[$__range]))",
+          "legendFormat": "cache hits"
+        },
+        {
+          "expr": "sum(increase(inferops_cache_misses_total[$__range]))",
+          "legendFormat": "cache misses"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RAG Top Score",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95,sum by (le) (rate(inferops_rag_top_score_bucket[5m]))))",
+          "legendFormat": "RAG top score p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "PII Detections",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(increase(inferops_pii_detections_total[$__range]))",
+          "legendFormat": "PII detections"
+        }
+      ]
+    }
+  ]
+}
