@@ -258,7 +258,7 @@ For budget-effective deployment, use:
 
 ## 11. Screenshots
 
-```markdown
+
 ![Dashboard](docs/screenshots/dashboard.png)
 ![Chat Console](docs/screenshots/chat-console.png)
 ![Request Logs](docs/screenshots/request-logs.png)
@@ -266,6 +266,6 @@ For budget-effective deployment, use:
 ![Evaluation Center](docs/screenshots/evaluation-center.png)    
 ![Knowledge Base](docs/screenshots/knowledge-base.png)
 ![Grafana Dashboard](docs/screenshots/grafana-dashboard.png)
-```
+
 
 This project is not only an LLM application. It is an LLM deployment gateway focused on real production concerns.
