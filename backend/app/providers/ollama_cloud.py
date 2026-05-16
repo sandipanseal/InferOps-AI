@@ -49,6 +49,5 @@ async def generate_ollama_cloud(
         text=text,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        provider="ollama_cloud",
-        model=settings.ollama_cloud_model,
+        raw={**data, "provider": "ollama_cloud", "model": settings.ollama_cloud_model},
     )

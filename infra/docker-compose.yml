@@ -1,22 +1,42 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: inferops
+      POSTGRES_USER: inferops
+      POSTGRES_PASSWORD: inferops_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   backend:
     build:
       context: ../backend
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: sqlite+aiosqlite:///./inferops.db
+      DATABASE_URL: postgresql+asyncpg://inferops:inferops_password@postgres:5432/inferops
+
       REDIS_URL: redis://redis:6379/0
+
       QDRANT_URL: http://qdrant:6333
       RAG_COLLECTION_NAME: inferops_knowledge
       EMBEDDING_MODEL_NAME: sentence-transformers/all-MiniLM-L6-v2
+
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.1:8b
+
+      OLLAMA_CLOUD_BASE_URL: https://ollama.com
+      OLLAMA_CLOUD_API_KEY: ${OLLAMA_CLOUD_API_KEY:-}
+      OLLAMA_CLOUD_MODEL: gpt-oss:120b-cloud
+
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ../backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
+      - postgres
       - redis
       - qdrant
 
@@ -71,16 +91,7 @@ services:
     depends_on:
       - prometheus
 
-  locust:
-    image: locustio/locust:latest
-    ports:
-      - "8089:8089"
-    volumes:
-      - ../loadtests:/mnt/locust
-    command: -f /mnt/locust/locustfile.py --host=http://backend:8000
-    depends_on:
-      - backend
-
 volumes:
-    qdrant_data:
-    grafana_data:
+  postgres_data:
+  qdrant_data:
+  grafana_data:

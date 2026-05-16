@@ -1,11 +1,14 @@
 const BROWSER_API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const SERVER_API_BASE =
-  process.env.INTERNAL_API_BASE || "http://backend:8000";
+  process.env.INTERNAL_API_BASE_URL || "http://backend:8000";
 
 export function getApiBase() {
-  return process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  // In the browser, `window` exists → use the public URL.
+  // During SSR inside Docker, fall back to the internal service name.
+  if (typeof window !== "undefined") return BROWSER_API_BASE;
+  return SERVER_API_BASE;
 }
 
 export async function apiGet(path: string) {

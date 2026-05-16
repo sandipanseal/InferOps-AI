@@ -14,7 +14,7 @@
       "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(inferops_requests_total[$__range]))",
+          "expr": "sum(inferops_requests_total) or vector(0)",
           "legendFormat": "requests"
         }
       ]
@@ -25,7 +25,7 @@
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(inferops_llm_cost_usd_total[$__range]))",
+          "expr": "sum(inferops_request_cost_usd_total) or vector(0)",
           "legendFormat": "cost"
         }
       ]
@@ -36,7 +36,7 @@
       "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(inferops_safety_blocks_total[$__range]))",
+          "expr": "sum(inferops_safety_blocks_total) or vector(0)",
           "legendFormat": "blocks"
         }
       ]
@@ -47,7 +47,7 @@
       "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(inferops_rag_queries_total[$__range]))",
+          "expr": "sum(inferops_rag_queries_total) or vector(0)",
           "legendFormat": "rag"
         }
       ]
@@ -58,7 +58,7 @@
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum by (model) (increase(inferops_requests_total[$__range]))",
+          "expr": "sum by (model) (inferops_requests_total)",
           "legendFormat": "{{model}}"
         }
       ]
@@ -69,7 +69,7 @@
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95,sum by (le, model) (rate(inferops_request_latency_ms_bucket[5m]))))",
+          "expr": "histogram_quantile(0.95,sum by (le, model) (rate(inferops_request_latency_ms_bucket[5m])))",
           "legendFormat": "{{model}}"
         }
       ]
@@ -80,7 +80,7 @@
       "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum by (model) (increase(inferops_request_cost_usd_total[$__range]))",
+          "expr": "sum by (model) (inferops_request_cost_usd_total)",
           "legendFormat": "{{model}}"
         }
       ]
@@ -91,11 +91,11 @@
       "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "sum(increase(inferops_cache_hits_total[$__range]))",
+          "expr": "sum(rate(inferops_cache_hits_total[5m])) or vector(0)",
           "legendFormat": "cache hits"
         },
         {
-          "expr": "sum(increase(inferops_cache_misses_total[$__range]))",
+          "expr": "sum(rate(inferops_cache_misses_total[5m])) or vector(0)",
           "legendFormat": "cache misses"
         }
       ]
@@ -106,7 +106,7 @@
       "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95,sum by (le) (rate(inferops_rag_top_score_bucket[5m]))))",
+          "expr": "histogram_quantile(0.95,sum by (le) (rate(inferops_rag_top_score_bucket[5m])))",
           "legendFormat": "RAG top score p95"
         }
       ]

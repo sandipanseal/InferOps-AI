@@ -22,10 +22,10 @@ def detect_and_redact_pii(text: str) -> PIIResult:
 
     patterns = [
         ("email", EMAIL_RE, "[EMAIL_REDACTED]"),
-        ("phone", PHONE_RE, "[PHONE_REDACTED]"),
+        ("api_key", API_KEY_RE, "[SECRET_REDACTED]"),
         ("iban", IBAN_RE, "[IBAN_REDACTED]"),
         ("credit_card", CREDIT_RE, "[CARD_REDACTED]"),
-        ("api_key", API_KEY_RE, "[SECRET_REDACTED]"),
+        ("phone", PHONE_RE, "[PHONE_REDACTED]"),
     ]
 
     for name, pattern, replacement in patterns:
