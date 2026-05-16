@@ -11,7 +11,7 @@ export function getApiBase() {
   return SERVER_API_BASE;
 }
 
-export async function apiGet<T = unknown>(path: string): Promise<T> {
+export async function apiGet<T = any>(path: string): Promise<T> {
   const base = getApiBase();
 
   const res = await fetch(`${base}${path}`, {
@@ -27,7 +27,10 @@ export async function apiGet<T = unknown>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function apiPost(path: string, body: unknown) {
+export async function apiPost<T = any>(
+  path: string,
+  body: unknown
+): Promise<T> {
   const base = getApiBase();
 
   const res = await fetch(`${base}${path}`, {
@@ -43,7 +46,7 @@ export async function apiPost(path: string, body: unknown) {
     throw new Error(`POST ${path} failed with status ${res.status}: ${text}`);
   }
 
-  return res.json();
+  return res.json() as Promise<T>;
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
