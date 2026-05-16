@@ -1,4 +1,7 @@
 .env
+.env.local
+.env.prod
+.env.*.local
 __pycache__/
 *.pyc
 .venv/
