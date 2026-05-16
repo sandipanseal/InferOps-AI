@@ -127,6 +127,7 @@ flowchart LR
 
 ```
 inferops-ai/
+├── .github/workflows               # CI pipeline
 ├── backend/
 │   ├── app/
 │   │   ├── api/                    # FastAPI routers
