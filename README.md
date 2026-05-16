@@ -393,11 +393,21 @@ prometheus + grafana
 ollama     (same host CPU, or separate GPU host)
 ```
 
-For GPU-backed self-hosted inference, swap `ollama_provider` for the included `vllm_provider` and deploy with `infra/k8s/vllm-gpu-deployment.optional.yaml`. The backend `Deployment` and `HorizontalPodAutoscaler` manifests are in `infra/k8s/`.
+### Kubernetes as the future production target
+
+The current deployment uses Docker Compose for local and small-scale production deployment. The architecture is Kubernetes-ready: stateless FastAPI backend containers can be horizontally scaled, PostgreSQL/Redis/Qdrant can be moved to managed services, and GPU-backed model serving can be added through vLLM pods on Kubernetes.
 
 ---
 
-## 12. Screenshots
+## 12. Future work
+
+- Add Kubernetes manifests for backend, frontend, Redis, Qdrant, and Prometheus.
+- Use managed PostgreSQL instead of running PostgreSQL inside the cluster.
+- Add vLLM GPU deployment as an optional Kubernetes-based serving layer.
+
+---
+
+## 13. Screenshots
 
 | | |
 |---|---|
