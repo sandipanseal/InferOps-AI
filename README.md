@@ -407,7 +407,13 @@ The current deployment uses Docker Compose for local and small-scale production 
 
 ---
 
-## 13. Screenshots
+## 13. CI/CD
+
+The project includes a GitHub Actions pipeline that validates backend imports, frontend production builds, Docker image builds, and production Compose configuration before deployment.
+
+---
+
+## 14. Screenshots
 
 | | |
 |---|---|
