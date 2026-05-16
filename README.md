@@ -415,7 +415,7 @@ The current deployment uses Docker Compose for local and small-scale production 
 | ![Logs](docs/screenshots/request-logs.png) | ![Models](docs/screenshots/models.png) |
 | ![Budget](docs/screenshots/budget.png) | ![Safety](docs/screenshots/safety.png) |
 | ![Evals](docs/screenshots/evaluation-center.png) | ![Knowledge](docs/screenshots/knowledge-base.png) |
-| ![Grafana](docs/screenshots/grafana-dashboard.png) | |
+| ![Grafana](docs/screenshots/grafana-dashboard.png) | ![Load Testing](docs/screenshots/load-test.png) |
 
 ---
 
