@@ -81,4 +81,4 @@ jobs:
       - name: Validate production compose
         run: |
           cp .env.example .env.prod || true
-          docker compose -f infra/docker-compose.prod.yml --env-file .env.prod config
+          docker compose -f infra/docker-compose.yml --env-file .env.prod config
