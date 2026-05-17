@@ -68,18 +68,16 @@ jobs:
       #   run: npx vitest run --coverage --coverage.reporter=lcov
 
       # -------------------------------------------------------------------
-      # SonarQube scan — Quality Gate enforces coverage > 80% & dup < 3%
+      # SonarQube scan — uploads analysis AND waits for the Quality Gate
+      # in a single step (-Dsonar.qualitygate.wait=true). The job fails
+      # red when the gate is not passed.
       # -------------------------------------------------------------------
-      - name: SonarQube Scan
+      - name: SonarQube Scan & Quality Gate
         uses: SonarSource/sonarqube-scan-action@v4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-      - name: Wait for SonarQube Quality Gate (fail build if not passed)
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          scanMetadataReportFile: .scannerwork/report-task.txt
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
