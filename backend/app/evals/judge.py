@@ -94,8 +94,11 @@ def _judge_one(case: dict[str, Any], judge_model: str, api_key: str) -> dict[str
         data = res.json()
 
     raw = data["choices"][0]["message"]["content"].strip()
-    # tolerate accidental code fences
-    raw = re.sub(r"(?:^```(?:json)?|```$)", "", raw, flags=re.MULTILINE).strip()
+    # Tolerate accidental code fences. Two separate substitutions avoid
+    # alternation with anchors (SonarQube S5850) and make the intent clear:
+    # strip a leading ```/```json fence, then a trailing ``` fence.
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+    raw = re.sub(r"\s*```$", "", raw, flags=re.MULTILINE).strip()
 
     try:
         parsed = json.loads(raw)
