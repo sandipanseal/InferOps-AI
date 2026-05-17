@@ -43,6 +43,10 @@ def _rag_chunk_count(steps: list[dict[str, Any]]) -> tuple[bool, int]:
 async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
     start = time.perf_counter()
     status = "ok"
+    # Default agent model — keep in sync with run_agent()'s default in
+    # app/agents/rag_agent.py. Used as the Prometheus label fallback so that
+    # error-path and success-path series share the same `model` value.
+    effective_model = req.model or "gpt-4o-mini"
     try:
         result = await anyio.to_thread.run_sync(
             lambda: run_agent(question=req.question, model=req.model)
@@ -50,8 +54,8 @@ async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
     except Exception:
         status = "error"
         latency_ms = int((time.perf_counter() - start) * 1000)
-        AGENT_RUNS_TOTAL.labels(model=req.model or "agent", status=status).inc()
-        AGENT_LATENCY_MS.labels(model=req.model or "agent").observe(latency_ms)
+        AGENT_RUNS_TOTAL.labels(model=effective_model, status=status).inc()
+        AGENT_LATENCY_MS.labels(model=effective_model).observe(latency_ms)
         raise
     latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -116,7 +120,7 @@ async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
 
     # Emit Prometheus metrics for the agent run.
     try:
-        agent_model = (result.get("model") if isinstance(result, dict) else None) or (req.model or "agent")
+        agent_model = (result.get("model") if isinstance(result, dict) else None) or effective_model
         AGENT_RUNS_TOTAL.labels(model=agent_model, status=status).inc()
         AGENT_LATENCY_MS.labels(model=agent_model).observe(latency_ms)
         if isinstance(result, dict):

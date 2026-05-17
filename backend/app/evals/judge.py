@@ -95,7 +95,7 @@ def _judge_one(case: dict[str, Any], judge_model: str, api_key: str) -> dict[str
 
     raw = data["choices"][0]["message"]["content"].strip()
     # tolerate accidental code fences
-    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
+    raw = re.sub(r"(?:^```(?:json)?|```$)", "", raw, flags=re.MULTILINE).strip()
 
     try:
         parsed = json.loads(raw)
