@@ -80,5 +80,10 @@ jobs:
 
       - name: Validate production compose
         run: |
-          cp .env.example .env.prod || true
-          docker compose -f infra/docker-compose.yml --env-file .env.prod config
+          # backend service has `env_file: - ../.env` so a repo-root .env must exist
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            : > .env
+          fi
+          docker compose -f infra/docker-compose.yml --env-file .env config

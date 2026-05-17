@@ -26,17 +26,21 @@ InferOps AI implements each of these as a first-class concern with metrics, dash
 |---|---|
 | Routing | Complexity-aware model selection across mock / local Ollama / Ollama Cloud / OpenAI / vLLM |
 | Privacy | PII detection (email, phone, IBAN, credit card, API keys) → automatic local-only routing + input redaction |
-| Safety | Prompt-injection pattern blocking **before** any model is called |
+| Safety | Prompt-injection pattern blocking **before** any model is called (single-pattern match is enough) |
 | Cost control | Per-model pricing, daily budget guardrails, automatic downgrade when budget is exhausted |
 | Performance | Redis exact-prompt response cache (hash of fully assembled prompt) |
 | Resilience | Provider fallback chain with structured failure reasons |
-| Knowledge | Qdrant + SentenceTransformers RAG over uploaded PDF / DOCX / TXT / MD |
+| Knowledge (RAG) | Qdrant + SentenceTransformers RAG over uploaded PDF / DOCX / TXT / MD |
 | Rate limiting | Redis-backed per-user quota |
 | Observability | Prometheus metrics + Grafana dashboard + structured request logs in Postgres |
 | Multi-turn | Persistent conversations with conversation IDs |
-| Evaluation | Eval runner over JSONL test suites |
+| Deterministic evals | JSONL routing eval suite with PII / injection / blocked flags surfaced per case |
+| LLM-as-judge | GPT-4o scoring of every routing decision on a 1–5 rubric, with rationales |
+| RAGAS metrics | Faithfulness + context precision over the live RAG path |
+| Agentic workflow | LangChain tool-calling agent (`rag_search`, `routing_decision`, `complexity_score`) |
 | Load testing | Locust scenarios |
 | UI | Next.js console: Dashboard, Chat, Logs, Models, Budget, Safety, Evals, Knowledge Base |
+| CI regression | 29-check end-to-end suite ([Test/regression.ts](Test/regression.ts)) run on every push via GitHub Actions |
 
 ---
 
@@ -44,49 +48,82 @@ InferOps AI implements each of these as a first-class concern with metrics, dash
 
 ```mermaid
 flowchart LR
-    U[User / Client] --> FE[Next.js Frontend]
-    FE --> API[FastAPI Gateway]
+    U[User / Client] --> FE[Next.js Frontend<br/>Dashboard · Chat · Logs · Budget<br/>Safety · Models · Evals · Knowledge]
+    FE --> API[FastAPI Gateway<br/>/v1/chat · /v1/rag · /v1/agent<br/>/v1/evals · /v1/budget · /v1/logs<br/>/v1/models · /v1/dashboard · /metrics]
 
-    subgraph Gateway["FastAPI Gateway"]
-        Safety[Safety Layer<br/>PII + Injection]
+    subgraph Gateway["FastAPI request pipeline"]
+        Safety[Safety Layer<br/>PII redaction + Injection block]
         Budget[Budget Guardrails]
         Rate[Redis Rate Limiter]
-        Cache[Redis Response Cache]
-        RAG[RAG Retriever]
-        Router[Routing Engine]
+        Cache[Redis Response Cache<br/>SHA-256 of assembled prompt]
+        RAG[RAG Retriever<br/>top-k chunks]
+        Router[Routing Engine<br/>complexity + priority + privacy]
         Fallback[Fallback Chain]
-        Obs[Metrics + Logging]
+        Obs[Metrics + Structured Logging]
     end
 
     API --> Safety --> Budget --> Rate --> Cache --> RAG --> Router --> Fallback --> Obs
 
-    RAG --> Qdrant[(Qdrant)]
-    RAG --> Embed[SentenceTransformers]
+    RAG --> Qdrant[(Qdrant<br/>vector store)]
+    RAG --> Embed[SentenceTransformers<br/>all-MiniLM-L6-v2]
 
     Router --> Mock[Mock Provider]
-    Router --> Ollama[Ollama llama3.1:8b]
-    Router --> Cloud[Ollama Cloud]
-    Router --> OpenAI[OpenAI GPT-4.1]
-    Router --> VLLM[vLLM]
+    Router --> Ollama[Local Ollama<br/>llama3.1:8b]
+    Router --> Cloud[Ollama Cloud<br/>gpt-oss:120b-cloud]
+    Router --> OpenAI[OpenAI<br/>gpt-4.1]
+    Router --> VLLM[vLLM optional]
+
+    subgraph Agent["LangChain agent /v1/agent/run"]
+        ReAct[gpt-4o-mini ReAct loop]
+        Tools[Tools:<br/>rag_search · routing_decision · complexity_score]
+        ReAct --> Tools
+    end
+    API --> Agent
+    Tools --> RAG
+    Tools --> Router
+
+    subgraph Evals["Evaluation layer /v1/evals/*"]
+        Det[Deterministic runner<br/>routing_eval.jsonl]
+        Judge[LLM-as-judge<br/>GPT-4o rubric 1-5]
+        Ragas[RAGAS<br/>faithfulness · context precision]
+        Det --> Judge
+    end
+    API --> Evals
+    Evals --> Router
+    Ragas --> RAG
 
     Obs --> PG[(Postgres<br/>request_logs)]
     Obs --> Prom[Prometheus]
-    Prom --> Graf[Grafana]
+    Prom --> Graf[Grafana dashboard]
+
+    subgraph CI["GitHub Actions"]
+        Reg[Test/regression.ts<br/>20 backend + 9 frontend checks]
+    end
+    Reg -.runs against.-> API
+    Reg -.runs against.-> FE
 ```
 
-### Request lifecycle
+### Request lifecycle (`POST /v1/chat/conversation`)
 
-1. **Ingress** — `POST /v1/chat/conversation` is received by FastAPI.
-2. **Safety** — input is scanned for prompt-injection patterns. On match: request is blocked, logged, and returned with `selected_model="blocked"` (no model invoked, $0 cost).
-3. **PII redaction** — emails, phones, IBANs, cards, API keys are detected and replaced with placeholders. On hit, the request is forced onto the **local Ollama** route.
-4. **Budget check** — if the daily spend cap is reached, premium routes are disabled.
-5. **Rate limit** — Redis quota check per user.
-6. **RAG retrieval** — top-k chunks from Qdrant are injected into the prompt.
-7. **Cache lookup** — SHA-256 of `(assembled_prompt | priority | privacy)` is checked in Redis. On hit, the cached response is returned with `selected_model="redis-cache"`.
-8. **Routing decision** — based on `priority`, `privacy`, complexity heuristic, PII flag, and budget state.
-9. **Provider call** — with automatic fallback to a cheaper/local provider on failure.
-10. **Persistence** — full record (model, provider, tokens, cost, latency, safety flags, routing reason, trace id, RAG metadata) written to Postgres.
-11. **Metrics** — Prometheus counters and histograms updated.
+1. **Ingress** — FastAPI accepts the request, assigns a trace id.
+2. **Safety — prompt injection** — input is scanned for known injection patterns. A **single** pattern match is enough to block; the request returns immediately with `selected_model="blocked"`, no provider invoked, $0 cost. Source: [backend/app/safety/prompt_injection.py](backend/app/safety/prompt_injection.py).
+3. **Safety — PII redaction** — emails, phones, IBANs, credit cards, and API keys are detected. On any hit the input is redacted with placeholders and the request is **forced onto local Ollama** regardless of `priority`. Source: [backend/app/safety/pii_detector.py](backend/app/safety/pii_detector.py).
+4. **Budget check** — if the daily spend cap is reached, premium routes (OpenAI, Ollama Cloud) are disabled and the router downgrades to local / mock.
+5. **Rate limit** — Redis per-user quota check.
+6. **RAG retrieval** — top-k chunks are fetched from Qdrant and injected into the prompt with source citations.
+7. **Cache lookup** — SHA-256 of `(assembled_prompt | priority | privacy)` is checked in Redis. On hit the cached response is returned with `selected_model="redis-cache"`, latency typically <100 ms.
+8. **Routing decision** — combines `priority`, `privacy`, the complexity score, the PII flag, and the live budget state to pick a provider tier (see matrix below).
+9. **Provider call with fallback** — if the chosen provider errors, the fallback chain demotes to a cheaper / local provider and records the failure reason.
+10. **Persistence** — the full record (model, provider, tokens in/out, cost, latency, safety flags, routing reason, trace id, RAG metadata) is written to Postgres `request_logs`.
+11. **Metrics** — Prometheus counters and histograms are updated.
+
+### Out-of-band workflows
+
+- **Agentic — `POST /v1/agent/run`** — a LangChain ReAct agent (default `gpt-4o-mini`) calls the gateway's own tools (`rag_search`, `routing_decision`, `complexity_score`) and returns an answer plus the full `tools_used` + `steps` trace. Source: [backend/app/agents/rag_agent.py](backend/app/agents/rag_agent.py).
+- **Deterministic eval — `POST /v1/evals/run`** — replays the JSONL test suite through the live router and reports `passed_cases / total_cases`, routing accuracy, and per-case safety flags. Source: [backend/app/evals/eval_runner.py](backend/app/evals/eval_runner.py).
+- **LLM-as-judge — `POST /v1/evals/judge`** — runs the same suite and asks GPT-4o to score each routing decision on a 1–5 rubric with explicit policy rules (e.g. "PII must never leak to a cloud provider"). Source: [backend/app/evals/judge.py](backend/app/evals/judge.py).
+- **RAGAS — `POST /v1/evals/ragas`** — scores the RAG pipeline with `faithfulness` and `context_precision`. If `contexts` is omitted, the live retriever is used so the *production* RAG path is measured. Source: [backend/app/evals/ragas_eval.py](backend/app/evals/ragas_eval.py).
+- **Regression CI — every push** — [Test/regression.ts](Test/regression.ts) exercises 20 backend endpoints + 9 frontend pages against a full Docker Compose stack spun up by [.github/workflows/regression.yml](.github/workflows/regression.yml). Exits non-zero on any failure.
 
 ### Routing matrix
 
@@ -154,17 +191,20 @@ the LLM-as-judge eval layer (section 12) exists precisely to flag those cases.
 
 | Layer | Tech |
 |---|---|
-| Frontend | Next.js 14 (App Router) + Tailwind |
+| Frontend | Next.js 16 (App Router) + React 19 + Tailwind |
 | Backend | FastAPI + Pydantic + SQLAlchemy (async) |
 | Database | Postgres 16 |
 | Cache + Rate Limit | Redis 7 |
 | Vector DB | Qdrant |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
 | Local LLM | Ollama (`llama3.1:8b`) |
-| Cloud LLMs | OpenAI, Ollama Cloud |
+| Cloud LLMs | OpenAI (`gpt-4.1`, `gpt-4o-mini`), Ollama Cloud (`gpt-oss:120b-cloud`) |
 | GPU-ready | vLLM (OpenAI-compatible endpoint, optional) |
+| Agent framework | LangChain (tool-calling ReAct agent) |
+| Eval | Deterministic JSONL runner + LLM-as-judge (GPT-4o) + RAGAS |
 | Metrics | Prometheus client + server + Grafana |
 | Load testing | Locust |
+| Regression | TypeScript end-to-end suite (`tsx`) wired into GitHub Actions |
 | Orchestration | Docker Compose (Kubernetes manifests in `infra/k8s/`) |
 
 ---
@@ -179,11 +219,12 @@ inferops-ai/
 │   │   ├── api/                    # FastAPI routers
 │   │   │   ├── routes_chat.py      # POST /v1/chat/conversation
 │   │   │   ├── routes_rag.py       # /v1/rag/* (upload-text, upload-file, query, documents, clear)
+│   │   │   ├── routes_agent.py     # POST /v1/agent/run (LangChain tool-calling agent)
 │   │   │   ├── routes_dashboard.py # /v1/dashboard/summary, /v1/safety/events, /v1/evals/summary
 │   │   │   ├── routes_logs.py      # /v1/logs
 │   │   │   ├── routes_models.py    # /v1/models
 │   │   │   ├── routes_budget.py    # /v1/budget/*
-│   │   │   ├── routes_evals.py     # /v1/evals/run
+│   │   │   ├── routes_evals.py     # /v1/evals/run, /v1/evals/judge, /v1/evals/ragas
 │   │   │   ├── routes_health.py    # /health
 │   │   │   └── routes_metrics.py   # /metrics
 │   │   ├── core/
@@ -198,8 +239,9 @@ inferops-ai/
 │   │   │   └── redis_client.py
 │   │   ├── providers/              # mock / ollama / ollama_cloud / openai / vllm
 │   │   ├── safety/                 # pii_detector.py, prompt_injection.py
+│   │   ├── agents/                 # rag_agent.py (LangChain ReAct agent + tools)
 │   │   ├── db/                     # SQLAlchemy models + session
-│   │   ├── evals/                  # eval_runner.py
+│   │   ├── evals/                  # eval_runner.py, judge.py, ragas_eval.py
 │   │   ├── observability/          # metrics.py (Prometheus)
 │   │   ├── config.py
 │   │   ├── schemas.py
@@ -229,6 +271,7 @@ inferops-ai/
 │   └── k8s/                        # gateway-deployment.yaml, hpa.yaml, vllm-gpu (optional)
 ├── loadtests/                      # Locust scenarios
 ├── docs/                           # architecture, cost optimization, scaling, demo script
+├── Test/                           # Full-stack regression suite (regression.ts)
 ├── Makefile
 └── README.md
 ```
@@ -269,6 +312,31 @@ Services started: `postgres`, `redis`, `qdrant`, `backend`, `frontend`, `prometh
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3001 (admin / admin) |
 | Qdrant | http://localhost:6333 |
+
+### 6.4 Running the new features locally
+
+These features need a paid OpenAI key (and, for the medium-complexity
+quality route, an Ollama Cloud key) in `.env` at the repo root. They are
+deliberately **skipped in CI** to keep every push free — run them locally.
+
+| Feature | How to trigger |
+|---|---|
+| OpenAI premium route | `POST /v1/chat` with `priority="quality_optimized"` and a long, hard-keyword prompt (≥0.65 complexity) — routed to `gpt-4.1` |
+| Ollama Cloud route | `POST /v1/chat` with `priority="quality_optimized"` and a medium-complexity prompt (0.55–0.65) — routed to `gpt-oss:120b-cloud` |
+| LangChain agent | `POST /v1/agent/run` `{"question": "..."}` — returns `answer`, `tools_used`, `steps` |
+| Deterministic eval | `POST /v1/evals/run {}` — replays JSONL suite, returns `passed_cases/total_cases` |
+| LLM-as-judge | `POST /v1/evals/judge {}` — GPT-4o scores each routing decision, returns `average_judge_score` |
+| RAGAS metrics | `POST /v1/evals/ragas` with optional `samples` — returns `faithfulness` + `context_precision` |
+| Full regression (29/29) | `npx -y tsx Test/regression.ts` from repo root |
+| Frontend Evaluation Center | Open http://localhost:3000/evals — runs the three eval endpoints via buttons |
+| Frontend Knowledge Base | Open http://localhost:3000/knowledge — upload PDF/DOCX/TXT/MD, then query |
+
+Watch the routing decisions land in:
+
+- **Dashboard** — http://localhost:3000 — total requests, cost, cache hit rate
+- **Logs** — http://localhost:3000/logs — per-request model / cost / safety flags / RAG metadata
+- **Safety** — http://localhost:3000/safety — PII detections and injection blocks
+- **Grafana** — http://localhost:3001 — latency p95, cost, RAG top-score histograms
 
 ---
 
@@ -546,6 +614,59 @@ The response contains aggregate `scores` (mean per metric) and `samples`
 ## 14. CI/CD
 
 The project includes a GitHub Actions pipeline that validates backend imports, frontend production builds, Docker image builds, and production Compose configuration before deployment.
+
+### 14.1 Full-stack regression test
+
+Source: [Test/regression.ts](Test/regression.ts).
+
+A single TypeScript script exercises the **entire** running stack end-to-end —
+20 backend checks (health, models, dashboard, budget, logs, 6 chat routing
+scenarios, RAG upload/query, evals, LLM judge, RAGAS, agent, Prometheus) plus
+9 frontend checks (every page returns HTTP 200 with the expected H2, and the
+sidebar exposes all 7 navigation links). It uses Node 18+ global `fetch`, so
+no dependencies need to be installed beyond `tsx`.
+
+Run **locally** against a running stack (executes all 29 checks, including the
+paid OpenAI / Ollama Cloud / GPT-4o-judge / RAGAS / agent calls):
+
+```powershell
+docker compose -f infra/docker-compose.yml up -d --build
+npx -y tsx Test/regression.ts
+```
+
+Environment overrides:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `BACKEND_URL` | `http://127.0.0.1:8000` | Backend base URL |
+| `FRONTEND_URL` | `http://localhost:3000` | Frontend base URL |
+| `SKIP_LOCAL_OLLAMA` | `0` | Set to `1` to skip the two checks that require a local Ollama daemon (used in CI) |
+| `SKIP_CLOUD` | `0` | Set to `1` to skip every check that consumes a paid cloud API key — OpenAI `gpt-4.1`, Ollama Cloud, GPT-4o judge, RAGAS, LangChain agent (used in CI) |
+
+Skipped tests still **PASS** with a `skipped (...)` message so the suite
+totals stay at 29/29 in CI. Locally, leave both flags unset to exercise
+everything. The process exits non-zero on any real failure.
+
+### 14.2 Regression on every push (GitHub Actions)
+
+Workflow: [.github/workflows/regression.yml](.github/workflows/regression.yml).
+
+On every push and pull request to any branch the workflow:
+
+1. Writes a CI `.env` with empty `OPENAI_API_KEY` and `OLLAMA_CLOUD_API_KEY`
+   (CI does not have, and does not need, real keys).
+2. Builds and starts the full Docker Compose stack.
+3. Waits up to 2 minutes for `/health` and the frontend root.
+4. Runs `npx -y tsx Test/regression.ts` with `SKIP_LOCAL_OLLAMA=1` **and**
+   `SKIP_CLOUD=1`, so every push is free.
+5. On failure, dumps the last 300 lines of every container's logs.
+6. Always tears the stack down (`docker compose down -v`).
+
+**Cost-by-design:** the CI run never calls OpenAI or Ollama Cloud, never
+invokes the GPT-4o LLM judge, never runs RAGAS, and never spins up the
+LangChain agent. Those paths are exercised by running the script locally —
+where a developer's existing keys already cover the spend. No GitHub
+repository secrets are required for the workflow to pass.
 
 ---
 

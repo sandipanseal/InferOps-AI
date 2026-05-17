@@ -1,0 +1,93 @@
+name: Regression
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-stack-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Skip tests that need a local Ollama daemon — GitHub runners don't have one.
+      SKIP_LOCAL_OLLAMA: "1"
+      # Skip tests that consume paid cloud APIs (OpenAI, Ollama Cloud, GPT-4o judge,
+      # RAGAS, LangChain agent). Run those locally where keys are available; CI
+      # never needs to spend money on every push.
+      SKIP_CLOUD: "1"
+      BACKEND_URL: http://127.0.0.1:8000
+      FRONTEND_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Write .env for docker-compose
+        run: |
+          cat > .env <<'EOF'
+          OPENAI_API_KEY=
+          DEFAULT_PROVIDER=mock
+          REDIS_URL=redis://redis:6379/0
+          OLLAMA_BASE_URL=http://ollama-unreachable:11434
+          OLLAMA_MODEL=llama3.1:8b
+          OLLAMA_CLOUD_BASE_URL=https://ollama.com
+          OLLAMA_CLOUD_API_KEY=
+          OLLAMA_CLOUD_MODEL=gpt-oss:120b-cloud
+          VLLM_BASE_URL=http://vllm:8000/v1
+          BACKEND_CORS_ORIGINS=http://localhost:3000
+          USER_DAILY_BUDGET_USD=1.00
+          TEAM_MONTHLY_BUDGET_USD=50.00
+          POSTGRES_DB=inferops
+          POSTGRES_USER=inferops
+          POSTGRES_PASSWORD=ci_password_change_me
+          DATABASE_URL=postgresql+asyncpg://inferops:ci_password_change_me@postgres:5432/inferops
+          EOF
+
+      - name: Build & start full stack
+        run: docker compose -f infra/docker-compose.yml up -d --build
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+              echo "backend ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "backend did not become healthy" >&2
+          exit 1
+
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/ >/dev/null; then
+              echo "frontend ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "frontend did not become reachable" >&2
+          exit 1
+
+      - name: Run regression suite
+        run: npx -y tsx Test/regression.ts
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color --tail=300
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v
