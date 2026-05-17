@@ -1,5 +1,5 @@
 /**
- * InferOps AI full-stack regression suite.
+ * InferOps AI full-stack regression Test suite.
  *
  * Run from repo root:
  *   npx -y tsx Test/regression.ts

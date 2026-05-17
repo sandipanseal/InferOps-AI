@@ -463,18 +463,38 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/dashboard/summary
 
 ### Prometheus metrics
 
-- `inferops_requests_total{model,provider}`
-- `inferops_request_latency_ms_bucket{model}` (histogram)
-- `inferops_request_cost_usd_total{model}`
+Core request pipeline:
+
+- `inferops_requests_total{model,provider,status}`
+- `inferops_request_latency_ms_bucket{model,provider}` (histogram)
+- `inferops_request_cost_usd_total{model,provider}`
 - `inferops_cache_hits_total`, `inferops_cache_misses_total`
 - `inferops_rate_limit_blocks_total`
 - `inferops_safety_blocks_total`, `inferops_pii_detections_total`
-- `inferops_rag_queries_total`, `inferops_rag_hits_total`, `inferops_rag_top_score_bucket`
-- `inferops_budget_blocks_total`, `inferops_fallback_total`
+- `inferops_rag_queries_total{used}`, `inferops_rag_retrieved_chunks_bucket`, `inferops_rag_top_score_bucket`
+- `inferops_budget_remaining_usd{user_id}`, `inferops_fallback_total{from_provider,to_provider}`
+
+Advanced features (agent, deterministic eval, LLM judge, RAGAS):
+
+- `inferops_agent_runs_total{model,status}` — counter, agent runs
+- `inferops_agent_latency_ms_bucket{model}` — histogram, agent end-to-end latency
+- `inferops_agent_tool_calls_total{tool}` — counter, per-tool invocations (`rag_search`, `routing_decision`, `complexity_score`)
+- `inferops_agent_tokens_total{kind}` — counter, `input` vs `output` tokens
+- `inferops_eval_runs_total` — counter, deterministic eval suite runs
+- `inferops_eval_cases_total{result}` — counter, `passed` vs `failed`
+- `inferops_eval_routing_accuracy` — gauge, last routing accuracy (%)
+- `inferops_judge_runs_total{judge_model,status}` — counter, LLM-as-judge runs
+- `inferops_judge_score_bucket{judge_model}` — histogram, per-case judge score (1–5)
+- `inferops_judge_avg_score{judge_model}` — gauge, last run average
+- `inferops_ragas_runs_total{status}` — counter, RAGAS runs
+- `inferops_ragas_score{metric}` — gauge, last run aggregate (`faithfulness`, `context_precision`)
 
 ### Grafana
 
-Auto-provisioned dashboard `infra/grafana/dashboards/inferops-dashboard.json` shows requests, latency p95, cost, cache hit rate, RAG top-score, and PII detections by model.
+Auto-provisioned dashboard `infra/grafana/dashboards/inferops-dashboard.json` shows:
+
+- **Request pipeline row**: total requests, total cost, safety blocks, RAG queries, requests/latency p95/cost by model, cache hit rate, RAG top-score, PII detections.
+- **Agent / Eval / Judge / RAGAS row**: agent run count, judge avg score (colored 0–5), eval routing accuracy %, RAGAS faithfulness, agent latency p95, agent tool-call rate by tool, eval passed/failed timeline, judge score p50/p95 distribution, RAGAS scores by metric, agent token rate (input vs output).
 
 ---
 

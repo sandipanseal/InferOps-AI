@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.rag_agent import run_agent
 from app.db.models import RequestLog
 from app.db.session import get_db
+from app.observability.metrics import (
+    AGENT_RUNS_TOTAL,
+    AGENT_LATENCY_MS,
+    AGENT_TOOL_CALLS_TOTAL,
+    AGENT_TOKENS_TOTAL,
+)
 
 
 router = APIRouter(prefix="/v1/agent", tags=["agent"])
@@ -36,9 +42,17 @@ def _rag_chunk_count(steps: list[dict[str, Any]]) -> tuple[bool, int]:
 @router.post("/run")
 async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
     start = time.perf_counter()
-    result = await anyio.to_thread.run_sync(
-        lambda: run_agent(question=req.question, model=req.model)
-    )
+    status = "ok"
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: run_agent(question=req.question, model=req.model)
+        )
+    except Exception:
+        status = "error"
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        AGENT_RUNS_TOTAL.labels(model=req.model or "agent", status=status).inc()
+        AGENT_LATENCY_MS.labels(model=req.model or "agent").observe(latency_ms)
+        raise
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     # Persist a RequestLog row so the run shows up in Logs / Dashboard / Budget.
@@ -99,6 +113,25 @@ async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
         await db.commit()
     except Exception:
         await db.rollback()
+
+    # Emit Prometheus metrics for the agent run.
+    try:
+        agent_model = (result.get("model") if isinstance(result, dict) else None) or (req.model or "agent")
+        AGENT_RUNS_TOTAL.labels(model=agent_model, status=status).inc()
+        AGENT_LATENCY_MS.labels(model=agent_model).observe(latency_ms)
+        if isinstance(result, dict):
+            in_tok = int(result.get("input_tokens") or 0)
+            out_tok = int(result.get("output_tokens") or 0)
+            if in_tok:
+                AGENT_TOKENS_TOTAL.labels(kind="input").inc(in_tok)
+            if out_tok:
+                AGENT_TOKENS_TOTAL.labels(kind="output").inc(out_tok)
+            for step in result.get("steps") or []:
+                tool = step.get("tool")
+                if tool:
+                    AGENT_TOOL_CALLS_TOTAL.labels(tool=str(tool)).inc()
+    except Exception:
+        pass
 
     if isinstance(result, dict):
         result.setdefault("latency_ms", latency_ms)
