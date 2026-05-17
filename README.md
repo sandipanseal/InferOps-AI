@@ -192,7 +192,7 @@ the LLM-as-judge eval layer (section 12) exists precisely to flag those cases.
 
 | Layer | Tech |
 |---|---|
-| Frontend | Next.js 16 (App Router) + React 19 + Tailwind |
+| Frontend | Next.js (App Router) + React + Tailwind |
 | Backend | FastAPI + Pydantic + SQLAlchemy (async) |
 | Database | Postgres 16 |
 | Cache + Rate Limit | Redis 7 |
