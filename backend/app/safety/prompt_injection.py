@@ -32,5 +32,5 @@ def check_prompt_injection(text: str) -> InjectionResult:
     if len(reasons) >= 2:
         return InjectionResult("high", True, reasons)
     if len(reasons) == 1:
-        return InjectionResult("medium", False, reasons)
+        return InjectionResult("high", True, reasons)
     return InjectionResult("low", False, [])

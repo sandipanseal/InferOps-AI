@@ -99,6 +99,9 @@ def run_eval_suite():
                 "routing_reason": decision.reason,
                 "complexity_score": round(decision.complexity_score, 3),
                 "budget_remaining_usd": round(decision.budget_remaining_usd, 6),
+                "contains_pii": safety.contains_pii,
+                "prompt_injection_risk": safety.prompt_injection_risk,
+                "safety_blocked": safety.blocked,
                 "passed": passed,
             }
         )

@@ -10,6 +10,7 @@ from app.db.init_db import init_db
 from app.api.routes_logs import router as logs_router
 from app.api.routes_budget import router as budget_router
 from app.api.routes_models import router as models_router
+from app.api.routes_agent import router as agent_router
 
 app = FastAPI(
     title="InferOps AI",
@@ -43,6 +44,7 @@ app.include_router(rag_router)
 app.include_router(logs_router)
 app.include_router(budget_router)
 app.include_router(models_router)
+app.include_router(agent_router)
 
 metrics_app = make_asgi_app()
 app.mount("/metrics", metrics_app)

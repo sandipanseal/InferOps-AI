@@ -30,6 +30,18 @@ type LastTrace = {
   trace_id: string;
 };
 
+type AgentStep = {
+  tool: string | null;
+  tool_input: any;
+  observation: string;
+};
+
+type AgentTrace = {
+  model: string;
+  tools_used: string[];
+  steps: AgentStep[];
+};
+
 export default function PlaygroundPage() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
@@ -43,8 +55,10 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState("");
   const [priority, setPriority] = useState("cost_optimized");
   const [privacy, setPrivacy] = useState("normal");
+  const [agentMode, setAgentMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastTrace, setLastTrace] = useState<LastTrace | null>(null);
+  const [agentTrace, setAgentTrace] = useState<AgentTrace | null>(null);
 
   async function sendMessage() {
     if (!input.trim() || loading) return;
@@ -56,43 +70,70 @@ export default function PlaygroundPage() {
 
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
+    const question = input.trim();
     setInput("");
     setLoading(true);
 
     try {
-      const data: any = await apiPost("/v1/chat/conversation", {
-        user_id: "demo_user",
-        conversation_id: conversationId,
-        messages: nextMessages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        task_type: "auto",
-        priority,
-        privacy,
-        max_output_tokens: 450,
-      });
+      if (agentMode) {
+        const data: any = await apiPost("/v1/agent/run", { question });
 
-      setConversationId(data.conversation_id);
+        if (data?.ok === false) {
+          setMessages([
+            ...nextMessages,
+            {
+              role: "assistant",
+              content: `Agent error: ${data.error || "unknown error"}`,
+            },
+          ]);
+        } else {
+          setMessages([
+            ...nextMessages,
+            { role: "assistant", content: data.answer || "(empty answer)" },
+          ]);
+          setAgentTrace({
+            model: data.model,
+            tools_used: data.tools_used || [],
+            steps: data.steps || [],
+          });
+          setLastTrace(null);
+        }
+      } else {
+        const data: any = await apiPost("/v1/chat/conversation", {
+          user_id: "demo_user",
+          conversation_id: conversationId,
+          messages: nextMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          task_type: "auto",
+          priority,
+          privacy,
+          max_output_tokens: 450,
+        });
 
-      setMessages([
-        ...nextMessages,
-        {
-          role: "assistant",
-          content: data.assistant_message.content,
-        },
-      ]);
+        setConversationId(data.conversation_id);
 
-      setLastTrace({
-        selected_model: data.selected_model,
-        selected_provider: data.selected_provider,
-        routing_reason: data.routing_reason,
-        latency_ms: data.latency_ms,
-        estimated_cost_usd: data.estimated_cost_usd,
-        fallback: data.fallback,
-        safety: data.safety,
-        trace_id: data.trace_id,
-      });
+        setMessages([
+          ...nextMessages,
+          {
+            role: "assistant",
+            content: data.assistant_message.content,
+          },
+        ]);
+
+        setLastTrace({
+          selected_model: data.selected_model,
+          selected_provider: data.selected_provider,
+          routing_reason: data.routing_reason,
+          latency_ms: data.latency_ms,
+          estimated_cost_usd: data.estimated_cost_usd,
+          fallback: data.fallback,
+          safety: data.safety,
+          trace_id: data.trace_id,
+        });
+        setAgentTrace(null);
+      }
     } catch (e: any) {
       setMessages([
         ...nextMessages,
@@ -116,6 +157,7 @@ export default function PlaygroundPage() {
       },
     ]);
     setLastTrace(null);
+    setAgentTrace(null);
     setInput("");
   }
 
@@ -139,13 +181,14 @@ export default function PlaygroundPage() {
 
       <div className="mt-8 grid grid-cols-1 xl:grid-cols-3 gap-6">
         <div className="xl:col-span-2 rounded-2xl bg-white border shadow-sm flex flex-col h-[720px]">
-          <div className="border-b p-4 flex gap-4">
+          <div className="border-b p-4 flex gap-4 items-end">
             <div className="flex-1">
               <label className="text-xs font-medium text-slate-600">Priority</label>
               <select
-                className="mt-1 w-full rounded-xl border p-2 text-sm"
+                className="mt-1 w-full rounded-xl border p-2 text-sm disabled:bg-slate-100 disabled:text-slate-400"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
+                disabled={agentMode}
               >
                 <option value="cost_optimized">Cost optimized</option>
                 <option value="quality_optimized">Quality optimized</option>
@@ -156,15 +199,33 @@ export default function PlaygroundPage() {
             <div className="flex-1">
               <label className="text-xs font-medium text-slate-600">Privacy</label>
               <select
-                className="mt-1 w-full rounded-xl border p-2 text-sm"
+                className="mt-1 w-full rounded-xl border p-2 text-sm disabled:bg-slate-100 disabled:text-slate-400"
                 value={privacy}
                 onChange={(e) => setPrivacy(e.target.value)}
+                disabled={agentMode}
               >
                 <option value="normal">Normal</option>
                 <option value="sensitive">Sensitive</option>
                 <option value="local_only">Local only</option>
               </select>
             </div>
+
+            <label
+              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm cursor-pointer select-none ${
+                agentMode
+                  ? "bg-slate-950 text-white border-slate-950"
+                  : "bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+              title="Use the LangChain tool-calling agent (rag_search, routing_decision, complexity_score)"
+            >
+              <input
+                type="checkbox"
+                className="hidden"
+                checked={agentMode}
+                onChange={(e) => setAgentMode(e.target.checked)}
+              />
+              Agent mode
+            </label>
           </div>
 
           <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50">
@@ -256,18 +317,81 @@ export default function PlaygroundPage() {
         </div>
 
         <div className="rounded-2xl bg-white border shadow-sm p-5 h-fit">
-          <h3 className="text-lg font-semibold">Last Routing Trace</h3>
+          <h3 className="text-lg font-semibold">
+            {agentMode ? "Agent Tool Trace" : "Last Routing Trace"}
+          </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Shows the deployment decision for the latest assistant response.
+            {agentMode
+              ? "Tools the agent called to answer your question, in order."
+              : "Shows the deployment decision for the latest assistant response."}
           </p>
 
-          {!lastTrace && (
+          {!agentMode && !lastTrace && (
             <p className="mt-5 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
               No trace yet. Send a message first.
             </p>
           )}
 
-          {lastTrace && (
+          {agentMode && !agentTrace && (
+            <p className="mt-5 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+              No agent run yet. Ask the agent a question — it can search the
+              knowledge base, ask the router which model to use, and compute a
+              complexity score.
+            </p>
+          )}
+
+          {agentMode && agentTrace && (
+            <div className="mt-5 space-y-3 text-sm">
+              <TraceItem label="Agent model" value={agentTrace.model} />
+              <TraceItem
+                label="Tools used"
+                value={
+                  agentTrace.tools_used.length
+                    ? agentTrace.tools_used.join(", ")
+                    : "(none)"
+                }
+              />
+
+              <div>
+                <p className="font-medium mb-2">Steps</p>
+                {agentTrace.steps.length === 0 && (
+                  <p className="rounded-xl bg-slate-50 p-3 text-slate-500">
+                    Agent answered without calling tools.
+                  </p>
+                )}
+                <div className="space-y-3">
+                  {agentTrace.steps.map((step, idx) => {
+                    const friendly = describeStep(step);
+                    return (
+                      <div
+                        key={idx}
+                        className="rounded-xl border bg-slate-50 p-3"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-slate-950 text-white text-xs font-semibold">
+                            {idx + 1}
+                          </span>
+                          <p className="font-semibold text-slate-900">
+                            {friendly.title}
+                          </p>
+                        </div>
+                        {friendly.detail && (
+                          <p className="mt-2 text-xs text-slate-600 break-words">
+                            {friendly.detail}
+                          </p>
+                        )}
+                        <pre className="mt-2 whitespace-pre-wrap text-xs bg-white border rounded-lg p-2 max-h-48 overflow-auto text-slate-700">
+                          {step.observation}
+                        </pre>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!agentMode && lastTrace && (
             <div className="mt-5 space-y-3 text-sm">
               <TraceItem label="Model" value={lastTrace.selected_model} />
               <TraceItem label="Provider" value={lastTrace.selected_provider} />
@@ -307,6 +431,51 @@ export default function PlaygroundPage() {
       </div>
     </div>
   );
+}
+
+function describeStep(step: AgentStep): { title: string; detail: string | null } {
+  const input: any =
+    typeof step.tool_input === "string"
+      ? safeParse(step.tool_input)
+      : step.tool_input || {};
+
+  switch (step.tool) {
+    case "rag_search": {
+      const q = input?.query ?? "";
+      return {
+        title: "Searched the knowledge base",
+        detail: q ? `Query: \u201C${q}\u201D` : null,
+      };
+    }
+    case "routing_decision": {
+      const p = input?.prompt ?? "";
+      const pr = input?.priority ?? "auto";
+      return {
+        title: "Asked the router which model to use",
+        detail: `Priority: ${pr}${p ? ` \u00B7 Prompt: \u201C${p}\u201D` : ""}`,
+      };
+    }
+    case "complexity_score": {
+      const p = input?.prompt ?? "";
+      return {
+        title: "Computed a complexity score",
+        detail: p ? `Prompt: \u201C${p}\u201D` : null,
+      };
+    }
+    default:
+      return {
+        title: step.tool || "Reasoned without a tool",
+        detail: null,
+      };
+  }
+}
+
+function safeParse(s: string): any {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return {};
+  }
 }
 
 function TraceItem({ label, value }: { label: string; value: string }) {

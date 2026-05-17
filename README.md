@@ -102,6 +102,52 @@ flowchart LR
 | Daily budget exceeded | Local / mock downgrade |
 | Provider error | Fallback chain |
 
+### Complexity scoring 
+
+The router uses a deliberately simple, transparent heuristic — not an LLM — to
+score prompt complexity on a 0.0–1.0 scale. Source: [backend/app/core/complexity.py](backend/app/core/complexity.py).
+
+Algorithm:
+
+1. Start with a baseline of `0.25`.
+2. Add a length component: `0.45 × min(len(prompt) / 4000, 1.0)`.
+   Longer prompts trend toward higher complexity, capped at 4000 chars.
+3. If the prompt contains any **hard keyword** (`reason`, `analyze`, `strategy`,
+   `architecture`, `debug`, `legal`, `contract`, `risk`, `multi-step`,
+   `evaluate`, `compare`, `derive`) → add `+0.35`.
+4. If the prompt contains any **simple keyword** (`classify`, `summarize`,
+   `extract`, `rewrite`, `translate`, `short`) → subtract `0.15`.
+5. If `task_type` is `classification` or `simple_summary` → subtract `0.20`.
+6. If `task_type` is `reasoning`, `analysis`, or `coding` → add `+0.25`.
+7. Clamp to `[0.0, 1.0]`.
+
+Pseudocode:
+
+```python
+score = 0.25 + 0.45 * min(len(prompt) / 4000, 1.0)
+if any(k in prompt.lower() for k in HARD_KEYWORDS):   score += 0.35
+if any(k in prompt.lower() for k in SIMPLE_KEYWORDS): score -= 0.15
+if task_type in {"classification", "simple_summary"}: score -= 0.20
+if task_type in {"reasoning", "analysis", "coding"}:  score += 0.25
+return clamp(score, 0.0, 1.0)
+```
+
+The score feeds two thresholds defined in [backend/configs/routing_policies.py](backend/configs/routing_policies.py):
+
+- `LOW_COMPLEXITY_THRESHOLD` — below this, cost mode picks the cheapest route.
+- `HIGH_COMPLEXITY_THRESHOLD` — at/above this, quality mode picks the premium route.
+- Mid-band (`>= 0.55` / `>= 0.70`) routes to Ollama Cloud as the middle tier.
+
+**What this heuristic does well:** it is fast, deterministic, free, and easy
+to audit in the request logs (every request stores its `complexity_score`).
+
+**What it does not do:** it does not parse the prompt, it does not understand
+semantics, and it can be tricked by length or single keywords. Two prompts
+of equal substance can score differently if one happens to contain the word
+"analyze". This is acceptable for a routing signal — the worst case is a
+prompt being routed one tier too high or too low, not unsafe behavior — and
+the LLM-as-judge eval layer (section 12) exists precisely to flag those cases.
+
 ---
 
 ## 4. Technology stack
@@ -381,26 +427,115 @@ Expected behavior:
 
 ## 11. Production deployment
 
-Single-VPS topology:
-
-```
-Caddy / Nginx reverse proxy (TLS)
-  ├── frontend (Next.js)
-  └── backend (FastAPI + uvicorn workers)
-postgres   (managed or volume-backed)
-redis
-qdrant
-prometheus + grafana
-ollama     (same host CPU, or separate GPU host)
-```
-
-### Kubernetes as the future production target
-
-The current deployment uses Docker Compose for local and small-scale production deployment. The architecture is Kubernetes-ready: stateless FastAPI backend containers can be horizontally scaled, PostgreSQL/Redis/Qdrant can be moved to managed services, and GPU-backed model serving can be added through vLLM pods on Kubernetes.
+Still in Progress — the current Docker Compose setup is suitable for local development and small-scale production. For larger deployments, the architecture is designed to be Kubernetes-ready, with stateless FastAPI containers, managed PostgreSQL/Redis/Qdrant services, and optional vLLM GPU serving pods. Kubernetes manifests and Helm charts will be added in a future update.
 
 ---
 
-## 12. Future work
+## 12. Agentic workflow & advanced evaluation
+
+This section covers the three capabilities that sit *on top* of the gateway:
+a tool-using agent, an LLM-as-judge routing reviewer, and RAGAS metrics.
+
+All three are optional and require `OPENAI_API_KEY` (and the langchain / ragas
+deps in [backend/pyproject.toml](backend/pyproject.toml)) because they all
+depend on a function-calling LLM as the reasoning / judging engine.
+
+### 12.1 LangChain agentic workflow
+
+Source: [backend/app/agents/rag_agent.py](backend/app/agents/rag_agent.py),
+endpoint in [backend/app/api/routes_agent.py](backend/app/api/routes_agent.py).
+
+A LangChain tool-calling agent (ReAct-style, default `gpt-4o-mini`) is exposed
+that can call three InferOps tools and reason over their results:
+
+| Tool | What it does |
+|---|---|
+| `rag_search(query, top_k)` | Retrieves top-k chunks from Qdrant via the same path the chat route uses |
+| `routing_decision(prompt, priority)` | Asks the live router which model would serve a prompt, including the complexity score and reason |
+| `complexity_score(prompt)` | Returns the raw 0..1 complexity score |
+
+The agent decides which tools to call, in what order, and synthesizes a final
+answer with citations to the documents it pulled from `rag_search`.
+
+```powershell
+$body = @'
+{"question":"Given our runbook, what is the rollback procedure for a premium-routing outage, and which model would handle a follow-up debug request?"}
+'@
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/agent/run -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
+```
+
+The response contains the final `answer`, the list of `tools_used`, and the
+full `steps` (tool call + observation) so the trace is auditable.
+
+### 12.2 LLM-as-judge routing eval (GPT-4)
+
+Source: [backend/app/evals/judge.py](backend/app/evals/judge.py).
+
+The deterministic eval suite in [backend/app/evals/eval_runner.py](backend/app/evals/eval_runner.py)
+only checks exact `expected_model == actual_model`. That misses "right answer
+for the wrong reason" cases.
+
+`/v1/evals/judge` runs the same suite, then asks **GPT-4** (configurable, e.g.
+`gpt-4o`) to score every routing decision on a 1–5 rubric:
+
+```
+5 - optimal routing decision, well-justified
+4 - reasonable decision, minor concerns
+3 - acceptable, but a better route exists
+2 - clearly suboptimal
+1 - wrong route (e.g. PII leaked to a cloud provider)
+```
+
+The judge receives the input, priority, privacy, selected model/provider,
+complexity score, and routing reason — and returns strict JSON `{score, rationale}`.
+
+```powershell
+$body = '{"judge_model":"gpt-4o"}'
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/evals/judge -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 6
+```
+
+Returns `average_judge_score`, `routing_accuracy`, and per-case rationales.
+
+### 12.3 RAGAS metrics (faithfulness, context precision)
+
+Source: [backend/app/evals/ragas_eval.py](backend/app/evals/ragas_eval.py).
+
+`/v1/evals/ragas` evaluates RAG pipeline quality with the official `ragas`
+package:
+
+| Metric | Meaning |
+|---|---|
+| `faithfulness` | Fraction of claims in the answer supported by retrieved context. 1.0 = perfectly grounded, 0.0 = hallucinated. |
+| `context_precision` | Average precision of retrieved chunks ranked against the ground-truth answer. |
+
+Both metrics use an LLM judge internally (RAGAS default = OpenAI).
+
+Provide samples directly, or omit `contexts` and the endpoint will fetch them
+via the live InferOps RAG retriever — which means you are evaluating the
+*production* retrieval path, not a mock.
+
+```powershell
+$body = @'
+{
+  "samples": [
+    {
+      "question": "What is the rollback procedure?",
+      "answer": "Disable premium routing, route to local Ollama, inspect fallback logs.",
+      "ground_truth": "Disable premium model routing, route requests to local Ollama, inspect fallback logs."
+    }
+  ],
+  "top_k": 4
+}
+'@
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/evals/ragas -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 6
+```
+
+The response contains aggregate `scores` (mean per metric) and `samples`
+(per-row scores) so regressions can be tracked per question over time.
+
+---
+
+## 13. Future work
 
 - Add Kubernetes manifests for backend, frontend, Redis, Qdrant, and Prometheus.
 - Use managed PostgreSQL instead of running PostgreSQL inside the cluster.
@@ -408,13 +543,13 @@ The current deployment uses Docker Compose for local and small-scale production 
 
 ---
 
-## 13. CI/CD
+## 14. CI/CD
 
 The project includes a GitHub Actions pipeline that validates backend imports, frontend production builds, Docker image builds, and production Compose configuration before deployment.
 
 ---
 
-## 14. Screenshots
+## 15. Screenshots
 
 | | |
 |---|---|

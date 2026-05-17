@@ -1,0 +1,7 @@
+{
+  "user_id": "demo_user",
+  "priority": "quality_optimized",
+  "privacy": "normal",
+  "task_type": "reasoning",
+  "input": "Walk me through how a global LLM inference platform would typically balance traffic across regions during a partial outage, considering health checks, retries, hedged requests, queue depths, GPU saturation signals, autoscaling reaction time, and the impact on tail latency for end users. Then talk about how routing decisions interact with caching layers, request shaping, prioritization queues, multi-tenant fairness, and noisy-neighbor mitigation when one tenant suddenly spikes their request volume by an order of magnitude. Finally, describe how the operations team would monitor and respond to such an event in real time, what dashboards and alerts they would rely on, and what playbooks they would follow. Be detailed and use concrete numbers and example timelines where it helps the explanation feel realistic."
+}
