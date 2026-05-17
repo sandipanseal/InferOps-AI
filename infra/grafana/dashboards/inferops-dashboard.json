@@ -5,7 +5,7 @@
   "tags": ["inferops", "llmops", "ai-deployment"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
   "panels": [
     {
@@ -119,6 +119,172 @@
         {
           "expr": "sum(increase(inferops_pii_detections_total[$__range]))",
           "legendFormat": "PII detections"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Agent / Eval / Judge / RAGAS",
+      "gridPos": { "x": 0, "y": 28, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Agent Runs",
+      "gridPos": { "x": 0, "y": 29, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(inferops_agent_runs_total) or vector(0)",
+          "legendFormat": "agent runs"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Judge Avg Score (last run)",
+      "gridPos": { "x": 6, "y": 29, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 3 },
+              { "color": "green", "value": 4 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(inferops_judge_avg_score) or vector(0)",
+          "legendFormat": "avg score"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Eval Routing Accuracy %",
+      "gridPos": { "x": 12, "y": 29, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 80 },
+              { "color": "green", "value": 95 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(inferops_eval_routing_accuracy) or vector(0)",
+          "legendFormat": "routing acc"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "RAGAS Faithfulness (last run)",
+      "gridPos": { "x": 18, "y": 29, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.6 },
+              { "color": "green", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(inferops_ragas_score{metric=\"faithfulness\"}) or vector(0)",
+          "legendFormat": "faithfulness"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent Latency p95 (ms)",
+      "gridPos": { "x": 0, "y": 33, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(inferops_agent_latency_ms_bucket[5m])))",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent Tool Calls (rate)",
+      "gridPos": { "x": 12, "y": 33, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (tool) (rate(inferops_agent_tool_calls_total[5m]))",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Eval Cases (passed vs failed)",
+      "gridPos": { "x": 0, "y": 41, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (result) (increase(inferops_eval_cases_total[$__range]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Judge Score Distribution p50 / p95",
+      "gridPos": { "x": 12, "y": 41, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, judge_model) (rate(inferops_judge_score_bucket[$__range])))",
+          "legendFormat": "p50 {{judge_model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, judge_model) (rate(inferops_judge_score_bucket[$__range])))",
+          "legendFormat": "p95 {{judge_model}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RAGAS Scores by Metric",
+      "gridPos": { "x": 0, "y": 49, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": { "min": 0, "max": 1 }
+      },
+      "targets": [
+        {
+          "expr": "inferops_ragas_score",
+          "legendFormat": "{{metric}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent Tokens (rate, input vs output)",
+      "gridPos": { "x": 12, "y": 49, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(inferops_agent_tokens_total[5m]))",
+          "legendFormat": "{{kind}}"
         }
       ]
     }

@@ -5,6 +5,11 @@ from app.db.session import get_db
 from app.db.models import RequestLog
 from app.db.models import Conversation, ConversationMessage
 from app.evals.eval_runner import run_eval_suite
+from app.observability.metrics import (
+    EVAL_RUNS_TOTAL,
+    EVAL_CASES_TOTAL,
+    EVAL_ROUTING_ACCURACY,
+)
 
 router = APIRouter(prefix="/v1", tags=["dashboard"])
 
@@ -304,4 +309,20 @@ async def evals_summary():
 
 @router.post("/evals/run")
 async def run_evals():
-    return run_eval_suite()
+    result = run_eval_suite()
+    try:
+        EVAL_RUNS_TOTAL.inc()
+        passed = int(result.get("passed_cases", 0))
+        total = int(result.get("total_cases", 0))
+        failed = max(total - passed, 0)
+        if passed:
+            EVAL_CASES_TOTAL.labels(result="passed").inc(passed)
+        if failed:
+            EVAL_CASES_TOTAL.labels(result="failed").inc(failed)
+        acc = result.get("routing_accuracy")
+        if acc is not None:
+            # eval_runner returns 0..1; expose as 0..100 percent
+            EVAL_ROUTING_ACCURACY.set(float(acc) * 100.0)
+    except Exception:
+        pass
+    return result

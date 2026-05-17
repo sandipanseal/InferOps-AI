@@ -72,5 +72,82 @@ RAG_TOP_SCORE = Histogram(
 )
 
 
+# ---------------------------------------------------------------------------
+# Agent / Eval / Judge / RAGAS — observability for the advanced features
+# ---------------------------------------------------------------------------
+
+AGENT_RUNS_TOTAL = Counter(
+    "inferops_agent_runs_total",
+    "Total LangChain agent runs (POST /v1/agent/run)",
+    ["model", "status"],
+)
+
+AGENT_LATENCY_MS = Histogram(
+    "inferops_agent_latency_ms",
+    "Latency of LangChain agent runs in milliseconds",
+    ["model"],
+    buckets=[100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000],
+)
+
+AGENT_TOOL_CALLS_TOTAL = Counter(
+    "inferops_agent_tool_calls_total",
+    "Number of tool invocations made by the LangChain agent",
+    ["tool"],
+)
+
+AGENT_TOKENS_TOTAL = Counter(
+    "inferops_agent_tokens_total",
+    "Tokens consumed by the LangChain agent",
+    ["kind"],  # input | output
+)
+
+EVAL_RUNS_TOTAL = Counter(
+    "inferops_eval_runs_total",
+    "Deterministic eval suite executions (POST /v1/evals/run)",
+)
+
+EVAL_CASES_TOTAL = Counter(
+    "inferops_eval_cases_total",
+    "Eval cases executed, partitioned by pass/fail",
+    ["result"],  # passed | failed
+)
+
+EVAL_ROUTING_ACCURACY = Gauge(
+    "inferops_eval_routing_accuracy",
+    "Routing accuracy of the last deterministic eval run (percent 0-100)",
+)
+
+JUDGE_RUNS_TOTAL = Counter(
+    "inferops_judge_runs_total",
+    "LLM-as-judge eval executions (POST /v1/evals/judge)",
+    ["judge_model", "status"],
+)
+
+JUDGE_SCORE = Histogram(
+    "inferops_judge_score",
+    "Per-case LLM-as-judge score (1..5)",
+    ["judge_model"],
+    buckets=[1, 2, 3, 4, 5],
+)
+
+JUDGE_AVG_SCORE = Gauge(
+    "inferops_judge_avg_score",
+    "Average LLM-as-judge score of the last run",
+    ["judge_model"],
+)
+
+RAGAS_RUNS_TOTAL = Counter(
+    "inferops_ragas_runs_total",
+    "RAGAS eval executions (POST /v1/evals/ragas)",
+    ["status"],
+)
+
+RAGAS_SCORE = Gauge(
+    "inferops_ragas_score",
+    "Aggregate RAGAS metric scores (0..1) from the last run",
+    ["metric"],  # faithfulness | context_precision | ...
+)
+
+
 def metrics_response():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
