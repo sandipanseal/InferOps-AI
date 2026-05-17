@@ -29,8 +29,9 @@ def check_prompt_injection(text: str) -> InjectionResult:
         if re.search(pattern, lower):
             reasons.append(f"Matched suspicious pattern: {pattern}")
 
-    if len(reasons) >= 2:
-        return InjectionResult("high", True, reasons)
-    if len(reasons) == 1:
+    # Block on ANY suspicious-pattern hit. This is intentionally aggressive —
+    # see README §2 ("single-pattern match is enough"). Adjust here if you
+    # want to introduce a separate medium tier later.
+    if reasons:
         return InjectionResult("high", True, reasons)
     return InjectionResult("low", False, [])
