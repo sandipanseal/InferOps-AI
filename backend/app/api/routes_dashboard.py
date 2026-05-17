@@ -322,7 +322,7 @@ async def run_evals():
         acc = result.get("routing_accuracy")
         if acc is not None:
             # eval_runner returns 0..1; expose as 0..100 percent
-            EVAL_ROUTING_ACCURACY.set(float(acc) * 100.0 if float(acc) <= 1.0 else float(acc))
+            EVAL_ROUTING_ACCURACY.set(float(acc) * 100.0)
     except Exception:
         pass
     return result
