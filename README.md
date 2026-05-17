@@ -41,6 +41,7 @@ InferOps AI implements each of these as a first-class concern with metrics, dash
 | Load testing | Locust scenarios |
 | UI | Next.js console: Dashboard, Chat, Logs, Models, Budget, Safety, Evals, Knowledge Base |
 | CI regression | 29-check end-to-end suite ([Test/regression.ts](Test/regression.ts)) run on every push via GitHub Actions |
+| Code quality | SonarQube scan on every push with a Quality Gate enforcing **coverage > 80%** and **duplicated lines < 3%** ([.github/workflows/sonarqube.yml](.github/workflows/sonarqube.yml)) |
 
 ---
 
@@ -633,7 +634,7 @@ The response contains aggregate `scores` (mean per metric) and `samples`
 
 ## 14. CI/CD
 
-The project includes a GitHub Actions pipeline that validates backend imports, frontend production builds, Docker image builds, and production Compose configuration before deployment.
+The project includes a GitHub Actions pipeline that validates backend imports, frontend production builds, Docker image builds, and production Compose configuration before deployment. A separate **SonarQube** workflow runs static analysis and enforces a code-quality gate on every push.
 
 ### 14.1 Full-stack regression test
 
@@ -687,6 +688,38 @@ invokes the GPT-4o LLM judge, never runs RAGAS, and never spins up the
 LangChain agent. Those paths are exercised by running the script locally —
 where a developer's existing keys already cover the spend. No GitHub
 repository secrets are required for the workflow to pass.
+
+### 14.3 SonarQube code-quality gate on every push
+
+Workflow: [.github/workflows/sonarqube.yml](.github/workflows/sonarqube.yml).
+Scanner config: [sonar-project.properties](sonar-project.properties).
+
+On every push and pull request to any branch the workflow:
+
+1. Checks out the repo with full git history (`fetch-depth: 0`) so Sonar can
+   compute accurate blame and “New Code” metrics.
+2. Sets up Python 3.11, installs the backend with `pytest` + `pytest-cov`,
+   and runs the backend test suite producing `backend/coverage.xml` and a
+   JUnit `pytest-report.xml`.
+3. Sets up Node 20 and installs frontend dependencies (frontend coverage
+   hook is wired but commented out until a Jest/Vitest suite is added —
+   TS/JS files are still scanned for bugs, smells, and duplication).
+4. Runs `SonarSource/sonarqube-scan-action@v4` to upload sources + coverage
+   to the SonarQube server.
+5. Runs `SonarSource/sonarqube-quality-gate-action@v1`, which polls the
+   Quality Gate result and **fails the build red** when the gate is not
+   met.
+
+#### Quality Gate thresholds (enforced server-side in SonarQube)
+
+| Metric | Operator | Value |
+|---|---|---|
+| Coverage | is less than | **80.0%** |
+| Duplicated Lines (%) | is greater than | **3.0%** |
+| Reliability Rating *(optional)* | is worse than | A |
+| Security Rating *(optional)* | is worse than | A |
+
+
 
 ---
 
