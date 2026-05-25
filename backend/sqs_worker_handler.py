@@ -48,7 +48,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     return {"batchItemFailures": [{"itemIdentifier": m} for m in failed]}
 
 
-# ── Job handlers ─────────────────────────────────────────────────────────────
+# Job handlers 
 
 
 def _sync_dsn() -> str:

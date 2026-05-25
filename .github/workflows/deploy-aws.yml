@@ -52,6 +52,9 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Compute image tag
         id: meta
         run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -64,12 +67,18 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="$REGISTRY/$REPO"
-          docker build \
+          # --provenance=false / --sbom=false: AWS Lambda's image puller does
+          # not understand the OCI attestation manifest entries that buildx
+          # attaches by default, and rejects the image with
+          # "InvalidParameterValueException: image manifest ... not supported".
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f backend/Dockerfile.lambda \
             -t "$IMAGE:$TAG" -t "$IMAGE:latest" \
+            --push \
             ./backend
-          docker push "$IMAGE:$TAG"
-          docker push "$IMAGE:latest"
 
       - name: Update API Lambda
         run: |

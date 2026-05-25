@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 = upstream postgres:16 + pgvector extension prebuilt.
+    # Required because backend/app/core/rag_service.py uses pgvector for RAG
+    # (replaces the standalone Qdrant service that used to live in this file).
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: inferops
       POSTGRES_USER: inferops
@@ -23,7 +26,8 @@ services:
 
       REDIS_URL: redis://redis:6379/0
 
-      QDRANT_URL: http://qdrant:6333
+      # QDRANT_URL kept for backward compatibility but no longer used —
+      # RAG is now pgvector-backed via DATABASE_URL above.
       RAG_COLLECTION_NAME: inferops_knowledge
       EMBEDDING_MODEL_NAME: sentence-transformers/all-MiniLM-L6-v2
 
@@ -41,7 +45,6 @@ services:
     depends_on:
       - postgres
       - redis
-      - qdrant
 
   frontend:
     build:
@@ -62,14 +65,6 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
 
   prometheus:
     image: prom/prometheus:latest
@@ -96,5 +91,4 @@ services:
 
 volumes:
   postgres_data:
-  qdrant_data:
   grafana_data:

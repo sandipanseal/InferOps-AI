@@ -190,23 +190,51 @@ the LLM-as-judge eval layer (section 12) exists precisely to flag those cases.
 
 ## 4. Technology stack
 
+The project ships in two configurations from the same codebase: a **local Docker Compose** stack for development and regression CI, and a **serverless AWS** stack (`aws-deploy` branch) for the live demo.
+
+### 4.1 Application layer (same in both stacks)
+
 | Layer | Tech |
 |---|---|
-| Frontend | Next.js (App Router) + React + Tailwind |
+| Frontend | Next.js 15 (App Router) + React + Tailwind |
 | Backend | FastAPI + Pydantic + SQLAlchemy (async) |
-| Database | Postgres 16 |
-| Cache + Rate Limit | Redis 7 |
-| Vector DB | Qdrant |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
-| Local LLM | Ollama (`llama3.1:8b`) |
 | Cloud LLMs | OpenAI (`gpt-4.1`, `gpt-4o-mini`), Ollama Cloud (`gpt-oss:120b-cloud`) |
-| GPU-ready | vLLM (OpenAI-compatible endpoint, optional) |
 | Agent framework | LangChain (tool-calling ReAct agent) |
 | Eval | Deterministic JSONL runner + LLM-as-judge (GPT-4o) + RAGAS |
-| Metrics | Prometheus client + server + Grafana |
 | Load testing | Locust |
-| Regression | TypeScript end-to-end suite (`tsx`) wired into GitHub Actions |
-| Orchestration | Docker Compose (Kubernetes manifests in `infra/k8s/`) |
+| Regression | TypeScript end-to-end suite (`tsx`) — [Test/regression.ts](Test/regression.ts) |
+| Code quality | SonarQube Quality Gate (coverage > 80%, duplicated lines < 3%) |
+
+### 4.2 Local stack (Docker Compose — `main` branch)
+
+| Layer | Tech |
+|---|---|
+| Container runtime | Docker Compose |
+| Database | Postgres 16 + pgvector (image `pgvector/pgvector:pg16`) |
+| Cache + Rate Limit | Redis 7 |
+| Local LLM | Ollama (`llama3.1:8b`) |
+| GPU-ready | vLLM (OpenAI-compatible endpoint, optional) |
+| Metrics | Prometheus client + server + Grafana |
+| Backend image | Python 3.12-slim + uvicorn ([backend/Dockerfile](backend/Dockerfile)) |
+| Orchestration extras | Kubernetes manifests in [infra/k8s/](infra/k8s/) |
+
+### 4.3 AWS serverless stack (`aws-deploy` branch)
+
+| Layer | Tech |
+|---|---|
+| Compute | AWS Lambda (container images, scale-to-zero) — API Lambda + SQS worker Lambda |
+| ASGI adapter | [Mangum](https://github.com/jordaneremieff/mangum) (FastAPI → API Gateway HTTP API v2) |
+| HTTP edge | API Gateway HTTP API v2 |
+| Frontend hosting | S3 + CloudFront (Next.js `output: 'export'`) |
+| Container registry | Amazon ECR |
+| Async queue | SQS jobs queue + DLQ (max 3 retries) |
+| Database | Supabase (managed Postgres + pgvector via transaction pooler on `:6543`) |
+| Cache + Rate Limit | Upstash Redis (serverless, TLS) |
+| Observability | Langfuse Cloud (LLM-native tracing, cost + eval scores) |
+| Backend image | Python 3.12 on Amazon Linux 2023 ([backend/Dockerfile.lambda](backend/Dockerfile.lambda)) |
+| Infrastructure as Code | Terraform (S3 state backend, 11 `.tf` files in [infra/terraform/](infra/terraform/)) |
+| Deploy CI | GitHub Actions ([.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml)) → ECR push → `aws lambda update-function-code` → `aws s3 sync` → CloudFront invalidate |
 
 ---
 
@@ -214,7 +242,11 @@ the LLM-as-judge eval layer (section 12) exists precisely to flag those cases.
 
 ```
 inferops-ai/
-├── .github/workflows               # CI pipeline
+├── .github/workflows/
+│   ├── ci.yml                      # backend lint + tests
+│   ├── regression.yml              # full-stack regression (docker compose + Test/regression.ts)
+│   ├── sonarqube.yml               # code-quality Quality Gate
+│   └── deploy-aws.yml              # ECR push → Lambda update → S3 sync → CloudFront invalidate  ◀ aws-deploy
 ├── backend/
 │   ├── app/
 │   │   ├── api/                    # FastAPI routers
@@ -236,21 +268,30 @@ inferops-ai/
 │   │   │   ├── rate_limiter.py
 │   │   │   ├── budget_manager.py
 │   │   │   ├── pricing.py
-│   │   │   ├── rag_service.py
+│   │   │   ├── rag_service.py      # pgvector-backed RAG (replaces Qdrant)
+│   │   │   ├── job_queue.py        # SQS-or-thread async hand-off                                ◀ aws-deploy
 │   │   │   └── redis_client.py
 │   │   ├── providers/              # mock / ollama / ollama_cloud / openai / vllm
 │   │   ├── safety/                 # pii_detector.py, prompt_injection.py
 │   │   ├── agents/                 # rag_agent.py (LangChain ReAct agent + tools)
-│   │   ├── db/                     # SQLAlchemy models + session
+│   │   ├── db/                     # SQLAlchemy models + async session (asyncpg)
 │   │   ├── evals/                  # eval_runner.py, judge.py, ragas_eval.py
-│   │   ├── observability/          # metrics.py (Prometheus)
-│   │   ├── config.py
+│   │   ├── observability/
+│   │   │   ├── metrics.py          # Prometheus (local stack)
+│   │   │   └── langfuse_client.py  # Langfuse traces (cloud stack)                               ◀ aws-deploy
+│   │   ├── config.py               # cloud-aware Settings + is_cloud / is_local helpers
 │   │   ├── schemas.py
 │   │   └── main.py
-│   ├── configs/                    # routing rules, model prices
+│   ├── configs/
+│   │   ├── routing_policies.py     # LOCAL_PROVIDER swap (ollama ↔ ollama_cloud) is env-driven
+│   │   ├── routing_rules.yaml
+│   │   └── model_prices.yaml
 │   ├── evals/                      # routing_eval.jsonl + runner
 │   ├── tests/
-│   ├── Dockerfile
+│   ├── Dockerfile                  # local Compose image (python:3.12-slim + uvicorn)
+│   ├── Dockerfile.lambda           # AWS Lambda image (AL2023 + Mangum + pre-baked embedding)    ◀ aws-deploy
+│   ├── lambda_handler.py           # Mangum entry + cold-start init_db                           ◀ aws-deploy
+│   ├── sqs_worker_handler.py       # SQS worker Lambda entry (psycopg2, no SQLAlchemy)           ◀ aws-deploy
 │   └── pyproject.toml
 ├── frontend/
 │   ├── app/                        # Next.js App Router pages
@@ -263,19 +304,34 @@ inferops-ai/
 │   │   ├── evals/                  # Evaluation center
 │   │   └── knowledge/              # RAG knowledge base
 │   ├── components/                 # Sidebar, MetricCard
-│   ├── lib/api.ts                  # API client (browser + SSR aware)
+│   ├── lib/api.ts                  # API client (browser + SSR aware, NEXT_PUBLIC_API_BASE_URL)
+│   ├── next.config.ts              # NEXT_OUTPUT=export toggles static export for S3/CloudFront ◀ aws-deploy
 │   └── Dockerfile
 ├── infra/
-│   ├── docker-compose.yml
+│   ├── docker-compose.yml          # postgres+pgvector / redis / backend / frontend / prom / grafana
 │   ├── prometheus/prometheus.yml
 │   ├── grafana/                    # provisioning + dashboards
-│   └── k8s/                        # gateway-deployment.yaml, hpa.yaml, vllm-gpu (optional)
+│   ├── k8s/                        # gateway-deployment.yaml, hpa.yaml, vllm-gpu (optional)
+│   └── terraform/                  # AWS infra-as-code                                            ◀ aws-deploy
+│       ├── main.tf                 # provider, region, S3 state backend
+│       ├── variables.tf            # input vars (secrets marked sensitive)
+│       ├── ecr.tf                  # ECR repo + 5-image lifecycle policy
+│       ├── iam.tf                  # Lambda exec role + SQS policy
+│       ├── sqs.tf                  # jobs queue + DLQ
+│       ├── lambda.tf               # API Lambda + Worker Lambda (same image, different CMDs)
+│       ├── api_gateway.tf          # HTTP API v2, $default route, CORS, access logs
+│       ├── s3_cloudfront.tf        # private S3 + OAC + CloudFront + 403/404 → /index.html
+│       ├── outputs.tf              # 9 values to paste into GitHub Secrets
+│       ├── bootstrap.sh            # one-time state-bucket creator
+│       └── aws-deploy.tfvars.example
 ├── loadtests/                      # Locust scenarios
 ├── docs/                           # architecture, cost optimization, scaling, demo script
 ├── Test/                           # Full-stack regression suite (regression.ts)
 ├── Makefile
 └── README.md
 ```
+
+> Lines tagged ◀ `aws-deploy` are present only on the `aws-deploy` branch; the `main` branch keeps its original local-only structure.
 
 ---
 
