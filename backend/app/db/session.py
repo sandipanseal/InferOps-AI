@@ -34,6 +34,19 @@ engine = create_async_engine(
     _async_dsn(settings.database_url),
     echo=False,
     pool_pre_ping=True,
+    # Supabase's transaction pooler (the only option Lambda can reach over
+    # IPv4) runs PgBouncer in transaction mode, which silently rotates the
+    # backing Postgres connection between transactions. asyncpg caches its
+    # prepared statements by client-side name (`__asyncpg_stmt_1__` etc.) —
+    # when the pooler hands us a connection that already has that name in
+    # its server-side statement cache, we get DuplicatePreparedStatementError.
+    # statement_cache_size=0 disables the client cache so every query is
+    # sent unprepared — the small extra round-trip is the cost of not having
+    # to manage prepared statements through the pooler.
+    connect_args={
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    },
 )
 
 
