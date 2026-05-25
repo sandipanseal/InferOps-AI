@@ -516,7 +516,7 @@ Expected behavior:
 
 ## 11. Production deployment
 
-Still in Progress — the current Docker Compose setup is suitable for local development and small-scale production. For larger deployments, the architecture is designed to be Kubernetes-ready, with stateless FastAPI containers, managed PostgreSQL/Redis/Qdrant services, and optional vLLM GPU serving pods. Kubernetes manifests and Helm charts will be added in a future update.
+The Production deployment details are mentioned in the production branch [https://github.com/sandipanseal/InferOps-AI/tree/aws-deploy]
 
 ---
 
