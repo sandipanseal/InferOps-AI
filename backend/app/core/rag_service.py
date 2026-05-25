@@ -30,13 +30,20 @@ from __future__ import annotations
 
 import uuid
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg2
 import psycopg2.extras
-from sentence_transformers import SentenceTransformer
 
 from app.config import get_settings
+
+# sentence_transformers transitively imports torch (~5-7s on Lambda cold start),
+# which alone blows past Lambda's 10s init-phase ceiling. We defer the import
+# inside get_embedding_model() so the cost is paid on the first RAG request,
+# not at every cold start. The TYPE_CHECKING branch keeps static type checkers
+# happy without triggering the runtime import.
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 settings = get_settings()
 
@@ -61,7 +68,12 @@ def _sync_dsn() -> str:
 
 
 @lru_cache(maxsize=1)
-def get_embedding_model() -> SentenceTransformer:
+def get_embedding_model() -> "SentenceTransformer":
+    # Deferred import — see top-of-file comment. lru_cache means torch +
+    # the model load happen exactly once per warm container, on the first
+    # RAG-touching request.
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(settings.embedding_model_name)
 
 
