@@ -1,5 +1,61 @@
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from fastapi import Response
+"""Prometheus metrics.
+
+In local Docker Compose Prometheus scrapes /metrics normally.
+In Lambda there's nothing scraping, but prometheus_client itself works
+fine — we keep the same metric objects so the call-sites in routes_chat,
+routes_agent etc. don't need branching. If the library is ever absent
+(e.g. trimmed dependency), no-op stubs keep import working.
+"""
+from __future__ import annotations
+
+try:
+    from prometheus_client import (
+        Counter,
+        Histogram,
+        Gauge,
+        generate_latest,
+        CONTENT_TYPE_LATEST,
+    )
+    from fastapi import Response
+
+    PROMETHEUS_AVAILABLE = True
+
+    def metrics_response():
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+except ImportError:  # pragma: no cover — defensive fallback
+    PROMETHEUS_AVAILABLE = False
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+    class _NoOpMetric:  # NOSONAR — intentional stub used only when prometheus_client is unavailable
+        def labels(self, *_args, **_kwargs):
+            return self
+
+        def inc(self, *_args, **_kwargs):
+            return None
+
+        def observe(self, *_args, **_kwargs):
+            return None
+
+        def set(self, *_args, **_kwargs):
+            return None
+
+    def Counter(*_args, **_kwargs):  # type: ignore[no-redef]  # NOSONAR — shadows prometheus_client.Counter
+        return _NoOpMetric()
+
+    def Histogram(*_args, **_kwargs):  # type: ignore[no-redef]  # NOSONAR — shadows prometheus_client.Histogram
+        return _NoOpMetric()
+
+    def Gauge(*_args, **_kwargs):  # type: ignore[no-redef]  # NOSONAR — shadows prometheus_client.Gauge
+        return _NoOpMetric()
+
+    def generate_latest():  # type: ignore[no-redef]
+        return b""
+
+    def metrics_response():
+        from fastapi import Response  # local import keeps stub light
+
+        return Response(b"", media_type=CONTENT_TYPE_LATEST)
 
 
 REQUEST_COUNT = Counter(
@@ -72,10 +128,6 @@ RAG_TOP_SCORE = Histogram(
 )
 
 
-# ---------------------------------------------------------------------------
-# Agent / Eval / Judge / RAGAS — observability for the advanced features
-# ---------------------------------------------------------------------------
-
 AGENT_RUNS_TOTAL = Counter(
     "inferops_agent_runs_total",
     "Total LangChain agent runs (POST /v1/agent/run)",
@@ -98,7 +150,7 @@ AGENT_TOOL_CALLS_TOTAL = Counter(
 AGENT_TOKENS_TOTAL = Counter(
     "inferops_agent_tokens_total",
     "Tokens consumed by the LangChain agent",
-    ["kind"],  # input | output
+    ["kind"],
 )
 
 EVAL_RUNS_TOTAL = Counter(
@@ -109,7 +161,7 @@ EVAL_RUNS_TOTAL = Counter(
 EVAL_CASES_TOTAL = Counter(
     "inferops_eval_cases_total",
     "Eval cases executed, partitioned by pass/fail",
-    ["result"],  # passed | failed
+    ["result"],
 )
 
 EVAL_ROUTING_ACCURACY = Gauge(
@@ -145,9 +197,5 @@ RAGAS_RUNS_TOTAL = Counter(
 RAGAS_SCORE = Gauge(
     "inferops_ragas_score",
     "Aggregate RAGAS metric scores (0..1) from the last run",
-    ["metric"],  # faithfulness | context_precision | ...
+    ["metric"],
 )
-
-
-def metrics_response():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

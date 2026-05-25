@@ -22,3 +22,18 @@ models:
     input_cost_per_1k_tokens: 0.0050
     output_cost_per_1k_tokens: 0.0150
     max_context_tokens: 128000
+
+  # Ollama Cloud — primary cost-optimized provider for the aws-deploy stack.
+  # Used for: cost_optimized + medium/high complexity, quality_optimized + non-complex,
+  # and as the privacy-preserving destination when local Ollama is not available.
+  gpt-oss:120b-cloud:
+    provider: ollama_cloud
+    input_cost_per_1k_tokens: 0.0002
+    output_cost_per_1k_tokens: 0.0002
+    max_context_tokens: 32768
+
+  llama3.1:8b:
+    provider: ollama_cloud
+    input_cost_per_1k_tokens: 0.0002
+    output_cost_per_1k_tokens: 0.0002
+    max_context_tokens: 32768

@@ -1,0 +1,25 @@
+# Copy to aws-deploy.tfvars and fill in real values.
+# aws-deploy.tfvars is git-ignored — never commit secrets.
+
+aws_region   = "eu-central-1"
+environment  = "aws-deploy"
+project_name = "inferops"
+
+# Supabase Postgres (use the connection pooler for serverless workloads)
+database_url = "postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres"
+
+# Upstash Redis (TLS)
+redis_url = "rediss://default:<token>@<endpoint>.upstash.io:6380"
+
+# OpenAI — used only for quality_optimized + high-complexity routes
+openai_api_key = "sk-..."
+
+# Ollama Cloud — primary cost-optimized provider
+ollama_cloud_api_key  = ""
+ollama_cloud_base_url = "https://ollama.com"
+ollama_cloud_model    = "gpt-oss:120b-cloud"
+
+# Langfuse (optional — leave blank to disable cloud LLM tracing)
+langfuse_public_key = ""
+langfuse_secret_key = ""
+langfuse_host       = "https://cloud.langfuse.com"

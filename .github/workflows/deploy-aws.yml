@@ -1,0 +1,134 @@
+name: Deploy (aws-deploy)
+
+# Build & deploy the InferOps AI stack on every push to the aws-deploy branch.
+#
+# Steps:
+#   1. Build the FastAPI Docker image from backend/ and push to ECR (single image
+#      shared by both the API Lambda and the SQS worker Lambda).
+#   2. Force both Lambdas to roll to the new :latest digest.
+#   3. Build the Next.js static export, sync to S3, invalidate CloudFront.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   AWS_ACCESS_KEY_ID            — IAM user with ECR / Lambda / S3 / CloudFront perms
+#   AWS_SECRET_ACCESS_KEY
+#   AWS_REGION                   — e.g. eu-central-1
+#   ECR_REPOSITORY               — inferops-backend-aws-deploy (from `terraform output`)
+#   API_LAMBDA_NAME              — inferops-api-aws-deploy
+#   WORKER_LAMBDA_NAME           — inferops-worker-aws-deploy
+#   FRONTEND_BUCKET              — terraform output frontend_bucket
+#   CLOUDFRONT_DISTRIBUTION_ID   — terraform output frontend_cloudfront_id
+#   API_URL                      — terraform output api_url (NEXT_PUBLIC_API_BASE_URL)
+
+on:
+  push:
+    branches: [aws-deploy]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: Build & deploy backend (Lambda)
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push Docker image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPO: ${{ secrets.ECR_REPOSITORY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$REPO"
+          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" ./backend
+          docker push "$IMAGE:$TAG"
+          docker push "$IMAGE:latest"
+
+      - name: Update API Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ secrets.API_LAMBDA_NAME }}" \
+            --image-uri "${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Update Worker Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ secrets.WORKER_LAMBDA_NAME }}" \
+            --image-uri "${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Wait for API Lambda update
+        run: |
+          aws lambda wait function-updated \
+            --function-name "${{ secrets.API_LAMBDA_NAME }}"
+
+      - name: Wait for Worker Lambda update
+        run: |
+          aws lambda wait function-updated \
+            --function-name "${{ secrets.WORKER_LAMBDA_NAME }}"
+
+  frontend:
+    name: Build & deploy frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build static export
+        working-directory: frontend
+        env:
+          NEXT_OUTPUT: export
+          NEXT_PUBLIC_API_BASE_URL: ${{ secrets.API_URL }}
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync frontend/out/ "s3://${{ secrets.FRONTEND_BUCKET }}/" \
+            --delete \
+            --cache-control "public, max-age=3600"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/*"

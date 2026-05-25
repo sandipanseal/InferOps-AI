@@ -29,6 +29,25 @@ class Settings(BaseSettings):
     user_daily_budget_usd: float = Field(default=1.0)
     team_monthly_budget_usd: float = Field(default=50.0)
 
+    # ── Cloud (aws-deploy branch) ────────────────────────────────────────────
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
+    sqs_queue_url: str | None = None
+    aws_region: str = "eu-central-1"
+
+    log_level: str = "INFO"
+    max_daily_budget_usd: float = 5.0
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.environment in {"demo", "production", "staging", "aws-deploy"}
+
+    @property
+    def is_local(self) -> bool:
+        return not self.is_cloud
+
     class Config:
         env_file = ".env"
         extra = "ignore"

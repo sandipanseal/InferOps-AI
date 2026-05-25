@@ -1,17 +1,39 @@
+"""RAG service.
+
+pgvector (Postgres) implementation. Drop-in replacement for the previous
+Qdrant version — all public functions keep their original names and
+signatures so that routes_rag.py, routes_chat.py, rag_agent.py, and
+ragas_eval.py work unchanged.
+
+Connection is taken from settings.database_url. Supports both
+postgresql+asyncpg://… (async) and plain postgresql://… URLs by rewriting
+to a sync psycopg2 DSN locally — pgvector indexing is done synchronously
+because it runs inside a single request lifetime and is fast.
+
+Schema:
+    rag_chunks(
+        id            UUID PRIMARY KEY,
+        document_id   UUID,
+        document_name TEXT,
+        filename      TEXT,
+        source_type   TEXT,
+        chunk_index   INT,
+        chunk_text    TEXT,
+        characters    INT,
+        embedding     vector(384)
+    )
+
+Tables and the pgvector extension are created lazily on first use so the
+service works against a fresh Supabase project with no migration step.
+"""
+from __future__ import annotations
+
 import uuid
 from functools import lru_cache
 from typing import Any
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance,
-    FieldCondition,
-    Filter,
-    FilterSelector,
-    MatchValue,
-    PointStruct,
-    VectorParams,
-)
+import psycopg2
+import psycopg2.extras
 from sentence_transformers import SentenceTransformer
 
 from app.config import get_settings
@@ -19,6 +41,23 @@ from app.config import get_settings
 settings = get_settings()
 
 VECTOR_SIZE = 384
+TABLE_NAME = "rag_chunks"
+
+_tables_ready = False
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _sync_dsn() -> str:
+    """Return a psycopg2-compatible DSN derived from settings.database_url."""
+    url = settings.database_url
+    # SQLAlchemy-style async URL → psycopg2 sync URL
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql://", 1)
+    return url
 
 
 @lru_cache(maxsize=1)
@@ -26,26 +65,67 @@ def get_embedding_model() -> SentenceTransformer:
     return SentenceTransformer(settings.embedding_model_name)
 
 
-@lru_cache(maxsize=1)
-def get_qdrant_client() -> QdrantClient:
-    return QdrantClient(url=settings.qdrant_url)
+def _get_conn():
+    """Open a fresh psycopg2 connection.
+
+    A new connection per call keeps things simple in Lambda where containers
+    can be paused for long stretches and connections silently die. Supabase
+    pooler handles the upstream side.
+    """
+    conn = psycopg2.connect(_sync_dsn())
+    conn.autocommit = True
+    return conn
 
 
-def ensure_collection() -> None:
-    client = get_qdrant_client()
+def _ensure_tables() -> None:
+    """Create pgvector extension, table, and ivfflat index on first use."""
+    global _tables_ready
+    if _tables_ready:
+        return
 
-    collections = client.get_collections().collections
-    existing_collection_names = {collection.name for collection in collections}
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+                    id            UUID PRIMARY KEY,
+                    document_id   UUID NOT NULL,
+                    document_name TEXT NOT NULL,
+                    filename      TEXT,
+                    source_type   TEXT,
+                    chunk_index   INT,
+                    chunk_text    TEXT NOT NULL,
+                    characters    INT,
+                    embedding     vector({VECTOR_SIZE})
+                );
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {TABLE_NAME}_document_name_idx
+                ON {TABLE_NAME} (document_name);
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {TABLE_NAME}_embedding_idx
+                ON {TABLE_NAME} USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100);
+                """
+            )
+        _tables_ready = True
+    finally:
+        conn.close()
 
-    if settings.rag_collection_name not in existing_collection_names:
-        client.create_collection(
-            collection_name=settings.rag_collection_name,
-            vectors_config=VectorParams(
-                size=VECTOR_SIZE,
-                distance=Distance.COSINE,
-            ),
-        )
 
+def _vector_literal(vec: list[float]) -> str:
+    """pgvector accepts vectors as '[0.1,0.2,...]' string literals."""
+    return "[" + ",".join(f"{v:.8f}" for v in vec) + "]"
+
+
+# ── Existing public helpers (kept) ───────────────────────────────────────────
 
 def chunk_text(text: str, chunk_size: int = 180, overlap: int = 40) -> list[str]:
     words = text.split()
@@ -71,51 +151,68 @@ def embed_text(text: str) -> list[float]:
     return vector.tolist()
 
 
+# ── Public API (signatures preserved exactly) ────────────────────────────────
+
+
+def ensure_collection() -> None:
+    """Compatibility alias — old code called this to lazily set up the store."""
+    _ensure_tables()
+
+
 def upload_document_to_qdrant(
     document_name: str,
     text: str,
     source_type: str = "file",
     filename: str | None = None,
 ) -> dict[str, Any]:
-    ensure_collection()
+    """Name preserved for caller compatibility — now writes to pgvector."""
+    _ensure_tables()
 
-    client = get_qdrant_client()
     chunks = chunk_text(text)
-
     document_id = str(uuid.uuid4())
-    points: list[PointStruct] = []
 
-    for chunk_index, chunk in enumerate(chunks):
-        point_id = str(uuid.uuid4())
+    if not chunks:
+        return {
+            "document_id": document_id,
+            "document_name": document_name,
+            "filename": filename or document_name,
+            "source_type": source_type,
+            "chunks_created": 0,
+            "characters_indexed": len(text),
+        }
 
-        points.append(
-            PointStruct(
-                id=point_id,
-                vector=embed_text(chunk),
-                payload={
-                    "document_id": document_id,
-                    "document_name": document_name,
-                    "filename": filename or document_name,
-                    "source_type": source_type,
-                    "chunk_index": chunk_index,
-                    "chunk_text": chunk,
-                    "characters": len(chunk),
-                },
-            )
-        )
-
-    if points:
-        client.upsert(
-            collection_name=settings.rag_collection_name,
-            points=points,
-        )
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            for chunk_index, chunk in enumerate(chunks):
+                cur.execute(
+                    f"""
+                    INSERT INTO {TABLE_NAME}
+                        (id, document_id, document_name, filename, source_type,
+                         chunk_index, chunk_text, characters, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        document_id,
+                        document_name,
+                        filename or document_name,
+                        source_type,
+                        chunk_index,
+                        chunk,
+                        len(chunk),
+                        _vector_literal(embed_text(chunk)),
+                    ),
+                )
+    finally:
+        conn.close()
 
     return {
         "document_id": document_id,
         "document_name": document_name,
         "filename": filename or document_name,
         "source_type": source_type,
-        "chunks_created": len(points),
+        "chunks_created": len(chunks),
         "characters_indexed": len(text),
     }
 
@@ -125,45 +222,62 @@ def query_knowledge(
     top_k: int = 5,
     document_name: str | None = None,
 ) -> dict[str, Any]:
-    ensure_collection()
+    _ensure_tables()
 
-    client = get_qdrant_client()
-    query_vector = embed_text(query)
-
-    query_filter = None
-
-    if document_name:
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="document_name",
-                    match=MatchValue(value=document_name),
+    query_vec = _vector_literal(embed_text(query))
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if document_name:
+                cur.execute(
+                    f"""
+                    SELECT
+                        document_id,
+                        document_name,
+                        filename,
+                        source_type,
+                        chunk_index,
+                        chunk_text,
+                        1 - (embedding <=> %s::vector) AS score
+                    FROM {TABLE_NAME}
+                    WHERE document_name = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (query_vec, document_name, query_vec, top_k),
                 )
-            ]
-        )
-
-    response = client.query_points(
-        collection_name=settings.rag_collection_name,
-        query=query_vector,
-        query_filter=query_filter,
-        limit=top_k,
-        with_payload=True,
-    )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT
+                        document_id,
+                        document_name,
+                        filename,
+                        source_type,
+                        chunk_index,
+                        chunk_text,
+                        1 - (embedding <=> %s::vector) AS score
+                    FROM {TABLE_NAME}
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (query_vec, query_vec, top_k),
+                )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
     matches: list[dict[str, Any]] = []
-
-    for point in response.points:
-        payload = point.payload or {}
-
+    for row in rows:
         matches.append(
             {
-                "document_id": payload.get("document_id"),
-                "document_name": payload.get("document_name", "unknown"),
-                "filename": payload.get("filename"),
-                "source_type": payload.get("source_type"),
-                "chunk_index": payload.get("chunk_index"),
-                "chunk_text": payload.get("chunk_text", ""),
-                "score": round(float(point.score), 4),
+                "document_id": str(row["document_id"]) if row["document_id"] else None,
+                "document_name": row.get("document_name", "unknown"),
+                "filename": row.get("filename"),
+                "source_type": row.get("source_type"),
+                "chunk_index": row.get("chunk_index"),
+                "chunk_text": row.get("chunk_text", ""),
+                "score": round(float(row["score"]), 4) if row.get("score") is not None else 0.0,
             }
         )
 
@@ -209,55 +323,52 @@ def build_rag_context(
 
 
 def list_documents() -> list[dict[str, Any]]:
-    ensure_collection()
+    _ensure_tables()
 
-    client = get_qdrant_client()
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    document_id,
+                    document_name,
+                    MAX(filename)    AS filename,
+                    MAX(source_type) AS source_type,
+                    COUNT(*)         AS chunks
+                FROM {TABLE_NAME}
+                GROUP BY document_id, document_name
+                ORDER BY document_name
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
-    points, _ = client.scroll(
-        collection_name=settings.rag_collection_name,
-        limit=10_000,
-        with_payload=True,
-        with_vectors=False,
-    )
-
-    docs: dict[str, dict[str, Any]] = {}
-
-    for point in points:
-        payload = point.payload or {}
-        name = payload.get("document_name", "unknown")
-
-        if name not in docs:
-            docs[name] = {
-                "document_id": payload.get("document_id"),
-                "document_name": name,
-                "filename": payload.get("filename", name),
-                "source_type": payload.get("source_type", "unknown"),
-                "chunks": 0,
-            }
-
-        docs[name]["chunks"] += 1
-
-    return list(docs.values())
+    return [
+        {
+            "document_id": str(row["document_id"]) if row["document_id"] else None,
+            "document_name": row.get("document_name", "unknown"),
+            "filename": row.get("filename") or row.get("document_name", "unknown"),
+            "source_type": row.get("source_type") or "unknown",
+            "chunks": int(row.get("chunks", 0)),
+        }
+        for row in rows
+    ]
 
 
 def delete_document(document_name: str) -> dict[str, Any]:
-    ensure_collection()
+    _ensure_tables()
 
-    client = get_qdrant_client()
-
-    client.delete(
-        collection_name=settings.rag_collection_name,
-        points_selector=FilterSelector(
-            filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="document_name",
-                        match=MatchValue(value=document_name),
-                    )
-                ]
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {TABLE_NAME} WHERE document_name = %s",
+                (document_name,),
             )
-        ),
-    )
+    finally:
+        conn.close()
 
     return {
         "deleted": True,
@@ -266,20 +377,20 @@ def delete_document(document_name: str) -> dict[str, Any]:
 
 
 def clear_knowledge_base() -> dict[str, Any]:
-    client = get_qdrant_client()
+    _ensure_tables()
 
-    collections = client.get_collections().collections
-    existing_collection_names = {collection.name for collection in collections}
-
-    if settings.rag_collection_name in existing_collection_names:
-        client.delete_collection(collection_name=settings.rag_collection_name)
-
-    ensure_collection()
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {TABLE_NAME}")
+    finally:
+        conn.close()
 
     return {
         "cleared": True,
-        "collection": settings.rag_collection_name,
+        "collection": TABLE_NAME,
     }
+
 
 def retrieve_rag_context_with_metadata(
     query: str,

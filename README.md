@@ -341,9 +341,9 @@ Watch the routing decisions land in:
 
 ---
 
-## 7. Example API calls (PowerShell)
+## 7. Example API calls
 
-> On Windows PowerShell, prefer `Invoke-RestMethod` with here-strings. Embedding JSON via `curl.exe -d "{\"x\":1}"` does **not** survive PowerShell's escaping and will fail.
+> On Windows PowerShell, prefer `Invoke-RestMethod` with here-strings. Embedding JSON via `curl.exe -d "{\"x\":1}"` does **not** survive PowerShell's escaping and will fail. On macOS / Linux / WSL use the curl examples instead.
 
 ### Chat
 
@@ -352,6 +352,13 @@ $body = @'
 {"user_id":"demo","conversation_id":null,"messages":[{"role":"user","content":"Explain rate limiting in an AI gateway."}],"task_type":"auto","priority":"cost_optimized","privacy":"normal","max_output_tokens":120}
 '@
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/chat/conversation -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 8
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/chat/conversation \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"demo","conversation_id":null,"messages":[{"role":"user","content":"Explain rate limiting in an AI gateway."}],"task_type":"auto","priority":"cost_optimized","privacy":"normal","max_output_tokens":120}' \
+  | jq .
 ```
 
 ### Upload a document to the RAG knowledge base
@@ -363,6 +370,13 @@ $body = @'
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/rag/upload-text -Method Post -ContentType 'application/json' -Body $body
 ```
 
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/rag/upload-text \
+  -H "Content-Type: application/json" \
+  -d '{"document_name":"runbook","text":"Outage rollback: disable premium routing, route to local Ollama, inspect fallback logs."}' \
+  | jq .
+```
+
 ### Query RAG directly
 
 ```powershell
@@ -372,6 +386,31 @@ $body = @'
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/rag/query -Method Post -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 6
 ```
 
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query":"What is the rollback procedure?","top_k":3}' \
+  | jq .
+```
+
+### Agent run (LangChain ReAct tool-calling)
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/agent/run \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What is the rollback procedure?"}' \
+  | jq .
+```
+
+### LLM-as-judge eval
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/evals/judge \
+  -H "Content-Type: application/json" \
+  -d '{"judge_model":"gpt-4o"}' \
+  | jq .
+```
+
 ### Inspect logs / models / safety
 
 ```powershell
@@ -379,6 +418,13 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/logs            | Select-Object -Firs
 Invoke-RestMethod http://127.0.0.1:8000/v1/models
 Invoke-RestMethod http://127.0.0.1:8000/v1/safety/events   | Select-Object -ExpandProperty summary
 Invoke-RestMethod http://127.0.0.1:8000/v1/dashboard/summary
+```
+
+```bash
+curl -s http://127.0.0.1:8000/v1/logs | jq '.[0:3]'
+curl -s http://127.0.0.1:8000/v1/models | jq .
+curl -s http://127.0.0.1:8000/v1/safety/events | jq .summary
+curl -s http://127.0.0.1:8000/v1/dashboard/summary | jq .
 ```
 
 ---
@@ -514,9 +560,175 @@ Expected behavior:
 
 ---
 
-## 11. Production deployment
+## 11. Production deployment (AWS serverless, scale-to-zero)
 
-Still in Progress — the current Docker Compose setup is suitable for local development and small-scale production. For larger deployments, the architecture is designed to be Kubernetes-ready, with stateless FastAPI containers, managed PostgreSQL/Redis/Qdrant services, and optional vLLM GPU serving pods. Kubernetes manifests and Helm charts will be added in a future update.
+The `aws-deploy` branch ships InferOps AI as a fully serverless AWS stack.
+**Idle cost: ~$0.50/month.** When no one visits, every component scales to
+zero; when a request arrives the API Lambda cold-starts in ~5 seconds and
+the response is served from a global CDN. The `main` branch (local Docker
+Compose) is untouched — both stacks live side by side.
+
+### 11.1 Cloud architecture
+
+```mermaid
+flowchart LR
+    Browser[Recruiter / User<br/>browser] --> CF[CloudFront CDN<br/>HTTPS + global edges]
+
+    CF --> S3[(S3 bucket<br/>Next.js static export)]
+    CF --> APIG[API Gateway v2<br/>HTTP API]
+
+    APIG --> APILambda[API Lambda<br/>FastAPI + Mangum<br/>1024MB · 30s timeout]
+
+    APILambda --> Supa[(Supabase<br/>Postgres + pgvector<br/>RAG + request_logs<br/>+ conversations)]
+    APILambda --> Upstash[(Upstash Redis<br/>response cache<br/>+ rate limits)]
+    APILambda --> Ollama[Ollama Cloud<br/>gpt-oss:120b-cloud<br/>primary cost route]
+    APILambda --> OpenAI[OpenAI<br/>gpt-4.1<br/>premium route only]
+    APILambda --> SQS[SQS jobs queue]
+
+    SQS --> Worker[Worker Lambda<br/>512MB · 60s timeout<br/>sqs_worker_handler.handler]
+    Worker --> Supa
+    Worker --> LF[Langfuse Cloud<br/>LLM tracing<br/>cost + eval scores]
+    APILambda -.optional.-> LF
+
+    SQS -.failures x3.-> DLQ[(SQS DLQ<br/>14-day retention)]
+
+    subgraph CICD["GitHub Actions — .github/workflows/deploy-aws.yml"]
+        Push[Push to aws-deploy] --> Build[Build Docker image<br/>backend/Dockerfile]
+        Build --> ECR[(ECR repository)]
+        ECR --> APILambda
+        ECR --> Worker
+        Push --> NB[next build<br/>NEXT_OUTPUT=export]
+        NB --> S3sync[aws s3 sync ./out]
+        S3sync --> S3
+        S3sync --> Inv[CloudFront invalidate /*]
+    end
+
+    classDef serverless fill:#fef3c7,stroke:#b45309,color:#000;
+    classDef managed fill:#dbeafe,stroke:#1d4ed8,color:#000;
+    classDef cicd fill:#e0e7ff,stroke:#4338ca,color:#000;
+    class APILambda,Worker,APIG,CF,SQS,DLQ,S3,ECR serverless;
+    class Supa,Upstash,Ollama,OpenAI,LF managed;
+    class Push,Build,NB,S3sync,Inv cicd;
+```
+
+### 11.2 What replaces what
+
+| Local Docker Compose (main) | AWS aws-deploy | Why |
+|---|---|---|
+| FastAPI in `uvicorn` container | **API Lambda** (FastAPI + [Mangum](backend/lambda_handler.py)) | Scale-to-zero — no idle cost |
+| Self-hosted Postgres + Qdrant | **Supabase** (Postgres + pgvector) | One managed service instead of two; pgvector handles RAG embeddings via the rewritten [rag_service.py](backend/app/core/rag_service.py) (identical public API) |
+| Self-hosted Redis | **Upstash Redis** (serverless, TLS) | Free tier; no idle container |
+| Local Ollama on `localhost:11434` | **Ollama Cloud** (`gpt-oss:120b-cloud`) | Lambda has no GPU. The cloud branch swaps `LOCAL_PROVIDER` to `ollama_cloud` in [routing_policies.py](backend/configs/routing_policies.py) so PII / privacy-locked / cost-optimized routes still hit a cheap non-OpenAI provider |
+| Prometheus scrape + Grafana | **Langfuse Cloud** ([langfuse_client.py](backend/app/observability/langfuse_client.py)) | Lambda can't be scraped; Langfuse is LLM-native and free up to 50K observations/month. Falls back to no-op if keys absent |
+| Postgres write inline with request | **SQS → Worker Lambda** ([job_queue.py](backend/app/core/job_queue.py), [sqs_worker_handler.py](backend/sqs_worker_handler.py)) | Keeps the API hot-path fast; failed writes are retried 3× then land in the DLQ for inspection |
+| Next.js dev server / SSR | **S3 static export + CloudFront** | Toggled by `NEXT_OUTPUT=export` in [next.config.ts](frontend/next.config.ts); the API base URL is baked in at build time |
+
+### 11.3 Routing in cloud (recruiter-visible)
+
+Same engine as local — the only change is what the *local* slot points at.
+
+| Request type | Selected provider | Selected model | Approx. cost |
+|---|---|---|---|
+| `priority: cost_optimized`, low complexity | `mock` | `mock-cheap` | $0.0000 |
+| `priority: cost_optimized`, medium / high | `ollama_cloud` | `gpt-oss:120b-cloud` | ~$0.0002 / 1k tokens |
+| `priority: quality_optimized`, simple / medium | `ollama_cloud` | `gpt-oss:120b-cloud` | ~$0.0002 / 1k tokens |
+| `priority: quality_optimized`, complex (≥0.65) | `openai` | `gpt-4.1` | ~$0.005 in / 0.015 out per 1k |
+| PII detected / `privacy: sensitive` | `ollama_cloud` | `gpt-oss:120b-cloud` | Never reaches OpenAI |
+| Identical prompt seen before | `cache` | `redis-cache` | $0.0000 |
+| Daily budget exhausted | `mock` | `mock-cheap` | $0.0000 |
+| Prompt-injection match | `none` | `blocked` | $0.0000 |
+
+### 11.4 Infrastructure as code
+
+Everything is defined in [infra/terraform/](infra/terraform/). Eleven files, all reviewable, all named for what they do:
+
+| File | Provisions |
+|---|---|
+| [main.tf](infra/terraform/main.tf) | Provider, region, S3 state backend |
+| [variables.tf](infra/terraform/variables.tf) | Inputs (secrets marked `sensitive`) |
+| [ecr.tf](infra/terraform/ecr.tf) | ECR repo + 5-image lifecycle policy |
+| [iam.tf](infra/terraform/iam.tf) | Shared Lambda execution role + SQS policy |
+| [sqs.tf](infra/terraform/sqs.tf) | Jobs queue + DLQ (`maxReceiveCount = 3`) |
+| [lambda.tf](infra/terraform/lambda.tf) | API + worker Lambdas (same image, different CMDs) + SQS event source mapping |
+| [api_gateway.tf](infra/terraform/api_gateway.tf) | HTTP API v2, `$default` catch-all → API Lambda, CORS, access logs |
+| [s3_cloudfront.tf](infra/terraform/s3_cloudfront.tf) | Private bucket + Origin Access Control + CloudFront distribution with 403/404 → `/index.html` rewrites |
+| [outputs.tf](infra/terraform/outputs.tf) | All 9 values you paste into GitHub Secrets |
+| [bootstrap.sh](infra/terraform/bootstrap.sh) | One-time creator of the encrypted, versioned state bucket |
+| [aws-deploy.tfvars.example](infra/terraform/aws-deploy.tfvars.example) | Template for your secrets file (git-ignored) |
+
+### 11.5 CI/CD pipeline
+
+[.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) runs on every push to `aws-deploy`. Two sequential jobs:
+
+```mermaid
+flowchart LR
+    Push[git push origin aws-deploy] --> BE[Backend job]
+    BE --> Build[docker build -t ECR:sha ./backend]
+    Build --> ECR1[docker push ECR]
+    ECR1 --> Upd1[aws lambda update-function-code<br/>API Lambda]
+    ECR1 --> Upd2[aws lambda update-function-code<br/>Worker Lambda]
+    Upd1 --> Wait1[lambda wait function-updated]
+    Upd2 --> Wait2[lambda wait function-updated]
+    Wait1 --> FE[Frontend job]
+    Wait2 --> FE
+    FE --> Npm[npm ci]
+    Npm --> NextB[NEXT_OUTPUT=export<br/>NEXT_PUBLIC_API_BASE_URL=API_URL<br/>npm run build]
+    NextB --> Sync[aws s3 sync ./out s3://FRONTEND_BUCKET]
+    Sync --> Inv[aws cloudfront create-invalidation /*]
+    Inv --> Done[Live in ~30s]
+```
+
+Both Lambdas update from the **same** ECR image — only the worker's `image_config.command` differs (`["sqs_worker_handler.handler"]`). Image tag is the 12-char commit SHA so rollbacks are a one-line `update-function-code` away.
+
+### 11.6 Cold-start behavior
+
+The API Lambda image is ~1GB (FastAPI + LangChain + SentenceTransformers + RAGAS). Cold-start budget:
+
+| Step | Time |
+|---|---|
+| Lambda container image pull | ~2–4s |
+| `from app.main import app` (loads FastAPI + all routers) | ~1s |
+| Module-level `init_db()` in [lambda_handler.py](backend/lambda_handler.py) (idempotent `CREATE TABLE IF NOT EXISTS`) | ~300ms |
+| First Ollama Cloud / OpenAI call | depends on provider |
+| **Total visible to first user** | **~5–8s** |
+| Warm invocation | **~80–300ms** |
+
+The SentenceTransformers model is pre-baked into the Docker image (`RUN python -c "from sentence_transformers..."` in [backend/Dockerfile](backend/Dockerfile)) so the 300MB weight download never happens at cold start.
+
+### 11.7 Cost breakdown
+
+Estimated monthly cost at **zero traffic** and at **1000 chat requests/day**:
+
+| Component | Idle | 1k req/day |
+|---|---:|---:|
+| Lambda invocations + GB-s | $0.00 | ~$0.05 |
+| API Gateway HTTP API | $0.00 | ~$0.03 |
+| CloudFront | $0.00 | ~$0.01 |
+| S3 storage (~5MB site) | ~$0.00 | ~$0.00 |
+| ECR image storage (~1GB) | ~$0.10 | ~$0.10 |
+| CloudWatch Logs (7-day retention) | ~$0.05 | ~$0.30 |
+| SQS | $0.00 | $0.00 (free tier) |
+| **AWS total** | **~$0.15** | **~$0.50** |
+| Supabase (free tier 500MB) | $0.00 | $0.00 |
+| Upstash (free tier 10k cmd/day) | $0.00 | $0.00 |
+| Langfuse (free tier 50k obs/month) | $0.00 | $0.00 |
+| Ollama Cloud usage | — | ~$0.20 |
+| OpenAI usage (only complex routes) | — | ~$0.10–$2 |
+
+The ECR image storage line item dominates the idle bill. If you ever want truly $0 idle, swap the Docker-based Lambda for a zip-package Lambda + Lambda Layer for the model weights — out of scope here.
+
+### 11.8 Deployment runbook
+
+Full step-by-step (accounts to create, secrets to set, terraform commands) lives in the project root: see the deployment guide written during the AWS branch onboarding. The TL;DR:
+
+1. Create accounts: AWS, Supabase, Upstash, Ollama Cloud, OpenAI, Langfuse (optional).
+2. Configure AWS CLI: `aws configure`.
+3. Fill in `infra/terraform/aws-deploy.tfvars` (template at [aws-deploy.tfvars.example](infra/terraform/aws-deploy.tfvars.example)).
+4. Bootstrap state bucket: `cd infra/terraform && ./bootstrap.sh`.
+5. Provision: `terraform init && terraform apply -var-file=aws-deploy.tfvars`.
+6. Copy the 9 `terraform output` values into GitHub repo Secrets.
+7. Push to `aws-deploy` — GitHub Actions builds, pushes to ECR, rolls both Lambdas, syncs the frontend, invalidates CloudFront.
+8. Open `terraform output frontend_url` in the browser.
 
 ---
 
