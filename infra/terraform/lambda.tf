@@ -1,16 +1,22 @@
 # ── API Lambda (FastAPI + Mangum) ─────────────────────────────────────────────
 #
-# 1024MB chosen because SentenceTransformers MiniLM needs ~600-700MB peak.
+# 2048MB is required, not just nice-to-have:
+#   - Lambda allocates vCPU proportional to memory. At 1024MB (~0.5 vCPU)
+#     the heavy imports (langchain + ragas + sentence-transformers + sqlalchemy)
+#     blow past Lambda's hard 10s init-phase ceiling. 2048MB gives ~1 vCPU
+#     and roughly halves init time.
+#   - SentenceTransformers MiniLM needs ~600-700MB peak; 1024MB also leaves
+#     no headroom for inflight RAG queries.
 # 30s timeout covers slow LLM responses + pgvector retrieval.
-# Architecture stays at default x86_64 — boto3 + sentence-transformers are
-# both shipped as cp311-x86_64 wheels in the AWS Lambda Python base image.
+# Architecture stays at default x86_64 — every wheel we depend on ships
+# manylinux_2_28 cp312 binaries.
 resource "aws_lambda_function" "api" {
   function_name = "${var.project_name}-api-${var.environment}"
   package_type  = "Image"
   image_uri     = "${aws_ecr_repository.backend.repository_url}:latest"
 
   role        = aws_iam_role.lambda_exec.arn
-  memory_size = 1024
+  memory_size = 2048
   timeout     = 30
 
   environment {
