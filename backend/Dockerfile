@@ -8,6 +8,14 @@ FROM public.ecr.aws/lambda/python:3.11
 
 WORKDIR ${LAMBDA_TASK_ROOT}
 
+# Install build tools so any Python package that pip resolves to a source
+# distribution (e.g. when a newer version drops cp311 manylinux wheels) can
+# still compile. Without this the AWS Lambda base image has no `cc`/`gcc`
+# and `pip install` will abort on the first sdist it encounters.
+RUN yum install -y gcc gcc-c++ make python3-devel \
+    && yum clean all \
+    && rm -rf /var/cache/yum
+
 COPY pyproject.toml ./
 COPY app ./app
 COPY evals ./evals
@@ -16,10 +24,8 @@ COPY lambda_handler.py ./
 COPY sqs_worker_handler.py ./
 
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
-
-# Pre-download the embedding model so cold starts don't pay a 300MB download.
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+    && pip install --no-cache-dir . \
+    && python -c "from sentence_transformers import SentenceTransformer; \
+       SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
 
 CMD ["lambda_handler.handler"]
