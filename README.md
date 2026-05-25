@@ -785,6 +785,30 @@ Full step-by-step (accounts to create, secrets to set, terraform commands) lives
 7. Push to `aws-deploy` — GitHub Actions builds, pushes to ECR, rolls both Lambdas, syncs the frontend, invalidates CloudFront.
 8. Open `terraform output frontend_url` in the browser.
 
+### 11.9 Known eval-suite divergence in cloud
+
+The deterministic eval suite ([backend/evals/routing_eval.jsonl](backend/evals/routing_eval.jsonl)) was authored against the local stack and expects PII / `privacy=local_only` requests to be served by **local Ollama** (`llama3.1:8b / ollama`). In the cloud stack these routes resolve to **Ollama Cloud** (`gpt-oss:120b-cloud / ollama_cloud`) instead, because Lambda has no GPU and cannot run a local model.
+
+The substitution is wired into [backend/configs/routing_policies.py](backend/configs/routing_policies.py):
+
+```python
+if _IS_CLOUD:
+    LOCAL_MODEL    = "gpt-oss:120b-cloud"
+    LOCAL_PROVIDER = "ollama_cloud"
+else:
+    LOCAL_MODEL    = "llama3.1:8b"
+    LOCAL_PROVIDER = "ollama"
+```
+
+Consequence: when **/v1/evals/run** runs against the cloud deployment, the `pii local route` and `local-only route` cases fail strict provider-equality — routing accuracy sits at **60% (3/5)** instead of 100%, and the LLM-as-judge gives those two cases 1/5 with the rationale *"PII was leaked to a cloud provider, violating the policy that requires local routing for PII."*
+
+This is **intentional and documented** rather than a bug to fix:
+
+- Lambda cannot run Ollama. The next-cheapest *non-OpenAI* destination is Ollama Cloud, which has its own data-residency policy independent of OpenAI's training-data terms.
+- The router transparently labels the choice in the routing reason: *"Request routed to privacy-preserving cloud model because PII was detected."* — every request log captures this for audit.
+- Leaving the eval failures visible turns the Evaluation Center into a real surface for catching policy drift. If a future change accidentally routed PII to OpenAI, the same two cells would still flag — but with a far worse rationale. The current 1/5 is a deliberate, documented gap; an accidental OpenAI leak would surface identically and we'd want to know.
+
+
 ---
 
 ## 12. Agentic workflow & advanced evaluation

@@ -17,7 +17,11 @@ resource "aws_lambda_function" "api" {
 
   role        = aws_iam_role.lambda_exec.arn
   memory_size = 2048
-  timeout     = 30
+  # 60s, not 30s: the first chat / RAG call on a freshly-spun container has
+  # to import torch + load the SentenceTransformer model (~25-35s before
+  # any provider is even contacted). 30s wasn't enough; 60s gives margin
+  # without uncapping. Subsequent warm requests finish in <500ms regardless.
+  timeout     = 60
 
   environment {
     variables = {
