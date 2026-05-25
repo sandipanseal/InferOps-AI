@@ -64,7 +64,10 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="$REGISTRY/$REPO"
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" ./backend
+          docker build \
+            -f backend/Dockerfile.lambda \
+            -t "$IMAGE:$TAG" -t "$IMAGE:latest" \
+            ./backend
           docker push "$IMAGE:$TAG"
           docker push "$IMAGE:latest"
 

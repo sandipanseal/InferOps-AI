@@ -1,0 +1,43 @@
+# InferOps AI — AWS Lambda container image.
+# Used by both the API Lambda (Mangum + FastAPI) and the SQS worker Lambda.
+# The worker overrides CMD via Terraform image_config.command.
+#
+# Build context: backend/  (paths below are relative to that directory)
+#
+# Base image choice:
+#   public.ecr.aws/lambda/python:3.12 runs on Amazon Linux 2023 (glibc 2.34),
+#   so manylinux_2_28 wheels (modern pyarrow, numpy 2.x, etc.) match and no
+#   source compilation happens. The Python 3.11 base image runs on AL2
+#   (glibc 2.26) where most modern scientific-Python wheels are rejected,
+#   forcing pip into source builds that need GCC 9.3+ which AL2 lacks.
+#
+# Build:
+#   docker build --platform linux/amd64 \
+#       -f backend/Dockerfile.lambda \
+#       -t <ecr-uri>:latest \
+#       ./backend
+
+FROM public.ecr.aws/lambda/python:3.12
+
+WORKDIR ${LAMBDA_TASK_ROOT}
+
+# Build tools — safety net for any rare transitive that still ships only an
+# sdist. AL2023 ships GCC 11, so source builds will succeed even if a wheel
+# is missing.
+RUN dnf install -y gcc gcc-c++ make python3-devel \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+COPY pyproject.toml ./
+COPY app ./app
+COPY evals ./evals
+COPY configs ./configs
+COPY lambda_handler.py ./
+COPY sqs_worker_handler.py ./
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir . \
+    && python -c "from sentence_transformers import SentenceTransformer; \
+       SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+CMD ["lambda_handler.handler"]

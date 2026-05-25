@@ -565,14 +565,13 @@ Expected behavior:
 The `aws-deploy` branch ships InferOps AI as a fully serverless AWS stack.
 **Idle cost: ~$0.50/month.** When no one visits, every component scales to
 zero; when a request arrives the API Lambda cold-starts in ~5 seconds and
-the response is served from a global CDN. The `main` branch (local Docker
-Compose) is untouched — both stacks live side by side.
+the response is served from a global CDN.
 
 ### 11.1 Cloud architecture
 
 ```mermaid
 flowchart LR
-    Browser[Recruiter / User<br/>browser] --> CF[CloudFront CDN<br/>HTTPS + global edges]
+    Browser[User browser] --> CF[CloudFront CDN<br/>HTTPS + global edges]
 
     CF --> S3[(S3 bucket<br/>Next.js static export)]
     CF --> APIG[API Gateway v2<br/>HTTP API]
@@ -623,7 +622,7 @@ flowchart LR
 | Postgres write inline with request | **SQS → Worker Lambda** ([job_queue.py](backend/app/core/job_queue.py), [sqs_worker_handler.py](backend/sqs_worker_handler.py)) | Keeps the API hot-path fast; failed writes are retried 3× then land in the DLQ for inspection |
 | Next.js dev server / SSR | **S3 static export + CloudFront** | Toggled by `NEXT_OUTPUT=export` in [next.config.ts](frontend/next.config.ts); the API base URL is baked in at build time |
 
-### 11.3 Routing in cloud (recruiter-visible)
+### 11.3 Routing in cloud 
 
 Same engine as local — the only change is what the *local* slot points at.
 
