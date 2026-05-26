@@ -1,7 +1,7 @@
 # InferOps AI — LLM Deployment Gateway
 
 InferOps AI is a production-style **control plane for LLM deployments**. It sits between your applications and one or more LLM providers (local Ollama, OpenAI, Ollama Cloud, vLLM, mock) and handles the operational concerns real deployments need: cost-aware routing, PII redaction, prompt-injection blocking, response caching, rate limiting, budget guardrails, RAG over your own documents, full request observability, and evaluation.
-
+Check the Live Demo :[https://d2iduozpu4hqbk.cloudfront.net]
 ---
 
 ## 1. Why this project matters
