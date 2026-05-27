@@ -83,9 +83,12 @@ m.save('/var/task/embedding_model'); \
 print('Saved bundle to /var/task/embedding_model'); \
 print('Test encode shape:', m.encode('hello', normalize_embeddings=True).shape)" \
     && test -f /var/task/embedding_model/modules.json \
-    && test -d /var/task/embedding_model/0_Transformer \
     && echo "=== Baked embedding model bundle ===" \
     && ls -la /var/task/embedding_model/ \
-    && ls -la /var/task/embedding_model/0_Transformer/
+    && cat /var/task/embedding_model/modules.json \
+    && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('/var/task/embedding_model'); \
+print('Round-trip load OK, shape:', m.encode('hello', normalize_embeddings=True).shape)"
 
 CMD ["lambda_handler.handler"]
