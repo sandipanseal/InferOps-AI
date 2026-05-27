@@ -136,11 +136,26 @@ def _ensure_tables() -> None:
                 ON {TABLE_NAME} (document_name);
                 """
             )
+            # IVFFlat clusters vectors into `lists` buckets and at query time
+            # searches only `ivfflat.probes` (default 1) of them. With our
+            # dataset (often <100 chunks during demos / tests) the single
+            # probed bucket usually doesn't contain the matching row and
+            # the query returns zero results, even though the row is there
+            # — visible immediately when you add a WHERE filter that lets
+            # Postgres pick a sequential-scan plan instead.
+            #
+            # HNSW has no probe parameter and works correctly for any
+            # dataset size, so we drop the legacy IVFFlat index (idempotent
+            # if it never existed) and replace it with HNSW. pgvector
+            # >= 0.5 ships HNSW; Supabase has shipped pgvector >= 0.5 since
+            # 2024 so this is safe.
+            cur.execute(
+                f"DROP INDEX IF EXISTS {TABLE_NAME}_embedding_idx;"
+            )
             cur.execute(
                 f"""
-                CREATE INDEX IF NOT EXISTS {TABLE_NAME}_embedding_idx
-                ON {TABLE_NAME} USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100);
+                CREATE INDEX IF NOT EXISTS {TABLE_NAME}_embedding_hnsw_idx
+                ON {TABLE_NAME} USING hnsw (embedding vector_cosine_ops);
                 """
             )
         _tables_ready = True
