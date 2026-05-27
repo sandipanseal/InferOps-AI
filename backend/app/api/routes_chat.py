@@ -29,6 +29,7 @@ from app.core.rate_limiter import (
     RateLimitExceeded,
 )
 from app.core.cache import get_cached_response, set_cached_response
+from app.core.job_queue import enqueue_langfuse_trace
 from app.core.rag_service import retrieve_rag_context_with_metadata
 from app.observability.metrics import (
     REQUEST_COUNT,
@@ -57,6 +58,51 @@ def empty_rag_result() -> dict:
         "rag_chunks": 0,
         "rag_top_score": None,
     }
+
+
+def emit_langfuse_trace(
+    *,
+    request_id: str,
+    user_id: str,
+    selected_model: str,
+    selected_provider: str,
+    routing_reason: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int,
+    estimated_cost: float,
+    safety: SafetyResult,
+    rag_used: bool,
+    cache_hit: bool,
+) -> None:
+    """Enqueue a Langfuse trace via SQS (worker Lambda flushes it).
+
+    Wrapped in a broad try/except — observability must never fail the request.
+    """
+    try:
+        enqueue_langfuse_trace(
+            {
+                "request_id": request_id,
+                "user_id": user_id,
+                "selected_model": selected_model,
+                "selected_provider": selected_provider,
+                "routing_reason": routing_reason,
+                "input_tokens": int(input_tokens),
+                "output_tokens": int(output_tokens),
+                "latency_ms": float(latency_ms),
+                "estimated_cost_usd": float(estimated_cost),
+                "safety": {
+                    "blocked": bool(safety.blocked),
+                    "contains_pii": bool(safety.contains_pii),
+                    "prompt_injection_risk": safety.prompt_injection_risk,
+                },
+                "rag_used": bool(rag_used),
+                "cache_hit": bool(cache_hit),
+                "agent_run": False,
+            }
+        )
+    except Exception:
+        pass
 
 
 def record_common_metrics(
@@ -222,6 +268,21 @@ User request:
         safety=safety,
         fallback=fallback,
         rag_result=rag_result,
+    )
+
+    emit_langfuse_trace(
+        request_id=request_id,
+        user_id=req.user_id,
+        selected_model=selected_model,
+        selected_provider=selected_provider,
+        routing_reason=decision.reason,
+        input_tokens=response_tokens.input_tokens,
+        output_tokens=response_tokens.output_tokens,
+        latency_ms=latency_ms,
+        estimated_cost=estimated_cost,
+        safety=safety,
+        rag_used=rag_result.get("rag_used", False),
+        cache_hit=False,
     )
 
     log = RequestLog(
@@ -427,6 +488,21 @@ async def chat_conversation(req: ChatConversationRequest, db: AsyncSession = Dep
             rag_result=rag_result,
         )
 
+        emit_langfuse_trace(
+            request_id=request_id,
+            user_id=req.user_id,
+            selected_model=selected_model,
+            selected_provider=selected_provider,
+            routing_reason="Request blocked by rate limiter.",
+            input_tokens=response_tokens.input_tokens,
+            output_tokens=response_tokens.output_tokens,
+            latency_ms=latency_ms,
+            estimated_cost=estimated_cost,
+            safety=safety,
+            rag_used=rag_result.get("rag_used", False),
+            cache_hit=False,
+        )
+
         await db.commit()
 
         return ChatConversationResponse(
@@ -575,6 +651,21 @@ Latest user question:
                     rag_result=rag_result,
                 )
 
+                emit_langfuse_trace(
+                    request_id=request_id,
+                    user_id=req.user_id,
+                    selected_model=selected_model,
+                    selected_provider=selected_provider,
+                    routing_reason="Served from exact Redis cache.",
+                    input_tokens=response_tokens.input_tokens,
+                    output_tokens=response_tokens.output_tokens,
+                    latency_ms=latency_ms,
+                    estimated_cost=estimated_cost,
+                    safety=safety,
+                    rag_used=rag_result.get("rag_used", False),
+                    cache_hit=True,
+                )
+
                 await db.commit()
 
                 return ChatConversationResponse(
@@ -669,6 +760,21 @@ Latest user question:
         safety=safety,
         fallback=fallback,
         rag_result=rag_result,
+    )
+
+    emit_langfuse_trace(
+        request_id=request_id,
+        user_id=req.user_id,
+        selected_model=selected_model,
+        selected_provider=selected_provider,
+        routing_reason=decision.reason,
+        input_tokens=response_tokens.input_tokens,
+        output_tokens=response_tokens.output_tokens,
+        latency_ms=latency_ms,
+        estimated_cost=estimated_cost,
+        safety=safety,
+        rag_used=rag_result.get("rag_used", False),
+        cache_hit=False,
     )
 
     log = RequestLog(

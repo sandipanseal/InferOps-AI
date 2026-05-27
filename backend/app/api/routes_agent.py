@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.rag_agent import run_agent
+from app.core.job_queue import enqueue_langfuse_trace
 from app.db.models import RequestLog
 from app.db.session import get_db
 from app.observability.metrics import (
@@ -86,8 +87,34 @@ async def agent_run(req: AgentRunRequest, db: AsyncSession = Depends(get_db)):
             f"tools={', '.join(tools_used) if tools_used else 'none'}"
         )
 
+        request_log_id = str(uuid.uuid4())
+        try:
+            enqueue_langfuse_trace(
+                {
+                    "request_id": request_log_id,
+                    "user_id": "agent_user",
+                    "selected_model": agent_model,
+                    "selected_provider": "openai",
+                    "routing_reason": reason,
+                    "input_tokens": int(input_tokens),
+                    "output_tokens": int(output_tokens),
+                    "latency_ms": float(latency_ms),
+                    "estimated_cost_usd": float(estimated_cost),
+                    "safety": {
+                        "blocked": False,
+                        "contains_pii": False,
+                        "prompt_injection_risk": "low",
+                    },
+                    "rag_used": bool(rag_used),
+                    "cache_hit": False,
+                    "agent_run": True,
+                }
+            )
+        except Exception:
+            pass
+
         log = RequestLog(
-            id=str(uuid.uuid4()),
+            id=request_log_id,
             user_id="agent_user",
             input_preview=req.question[:300],
             response_preview=(str(result.get("answer") or ""))[:500],
