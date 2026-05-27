@@ -101,8 +101,14 @@ def trace_request(
             },
         )
         client.flush()
-    except Exception as exc:
-        logger.debug("Langfuse trace_request swallowed: %s", exc)
+        logger.info(
+            "langfuse trace posted id=%s model=%s provider=%s",
+            request_id, selected_model, selected_provider,
+        )
+    except Exception:
+        # Surface the full traceback so we can debug SDK / endpoint mismatches.
+        # Observability failures still don't bring down the request.
+        logger.exception("Langfuse trace_request failed")
 
 
 def trace_eval_score(
@@ -124,5 +130,5 @@ def trace_eval_score(
             comment=comment,
         )
         client.flush()
-    except Exception as exc:
-        logger.debug("Langfuse trace_eval_score swallowed: %s", exc)
+    except Exception:
+        logger.exception("Langfuse trace_eval_score failed")
