@@ -1,0 +1,112 @@
+name: Destroy stack (manual)
+
+# Tears down every resource the deploy workflow provisioned:
+#   - Empties the S3 frontend bucket (objects block bucket delete)
+#   - terraform destroy (Lambdas, API GW, SQS, ECR, S3 bucket, CloudFront,
+#     IAM, all of it)
+#
+# Preserved:
+#   - The remote terraform state bucket (`inferops-terraform-state`). Keeping
+#     it lets a subsequent `Deploy full stack` run reuse the same backend
+#     without `bootstrap.sh`. Empty the state bucket manually if you really
+#     want a clean slate.
+#
+# Run time: 15-25 min. CloudFront's distribution disable can take 10-15 min
+# on its own — terraform polls until it's safe to delete.
+#
+# Required GitHub secrets (same set as deploy-full.yml):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+#   DATABASE_URL, REDIS_URL, OPENAI_API_KEY, OLLAMA_CLOUD_API_KEY
+#   LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY
+# (Terraform's variables are marked `sensitive` and required even for
+# destroy — they don't influence what gets torn down.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm. Any other value aborts.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Confirm intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation token
+        run: |
+          if [ "${{ inputs.confirm }}" != "destroy" ]; then
+            echo "Confirmation token was '${{ inputs.confirm }}', expected 'destroy'. Aborting."
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+  destroy:
+    name: Empty bucket + terraform destroy
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+
+      - name: Resolve frontend bucket name
+        id: bucket
+        working-directory: infra/terraform
+        run: |
+          # If state is empty (nothing deployed) this returns ''. We still
+          # want destroy to succeed — `aws s3 rm` on an empty/missing name
+          # is a no-op below.
+          name=$(terraform output -raw frontend_bucket 2>/dev/null || echo '')
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Empty frontend S3 bucket
+        if: steps.bucket.outputs.name != ''
+        run: |
+          set -euo pipefail
+          aws s3 rm "s3://${{ steps.bucket.outputs.name }}/" --recursive || true
+
+      - name: Terraform destroy
+        working-directory: infra/terraform
+        env:
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_redis_url: ${{ secrets.REDIS_URL }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_ollama_cloud_api_key: ${{ secrets.OLLAMA_CLOUD_API_KEY }}
+          TF_VAR_langfuse_public_key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          TF_VAR_langfuse_secret_key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: terraform destroy -auto-approve -input=false
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Destroy complete"
+            echo ""
+            echo "All InferOps resources have been torn down."
+            echo "The remote terraform state bucket \`inferops-terraform-state\` was preserved."
+            echo "Run **Deploy full stack** to bring everything back up."
+          } >> "$GITHUB_STEP_SUMMARY"

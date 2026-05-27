@@ -1,0 +1,223 @@
+name: Deploy full stack (manual)
+
+# End-to-end provision of the InferOps stack: terraform apply + backend image
+# build/push + Lambda code update + frontend build/sync + CloudFront
+# invalidation. Use this for greenfield deploys or when infra has changed.
+#
+# The push-triggered .github/workflows/deploy-aws.yml workflow remains the
+# fast path for code-only iterations — it skips terraform.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#
+#   --- AWS access ---
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#   AWS_REGION                   e.g. eu-central-1
+#
+#   --- Terraform variables (passed via TF_VAR_*) ---
+#   DATABASE_URL                 Supabase postgres connection string
+#   REDIS_URL                    Upstash redis URL (rediss://...)
+#   OPENAI_API_KEY
+#   OLLAMA_CLOUD_API_KEY
+#   LANGFUSE_PUBLIC_KEY          (optional — empty string is fine)
+#   LANGFUSE_SECRET_KEY          (optional)
+#
+# All other resource names + URLs are read from `terraform output` after
+# apply — no extra secrets needed for the lambdas / bucket / CF id.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_terraform:
+        description: "Run terraform apply (uncheck for image-only redeploys)"
+        type: boolean
+        default: true
+      skip_frontend:
+        description: "Skip the frontend build + sync step"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_repository_url: ${{ steps.tf_out.outputs.ecr_repository_url }}
+      api_lambda: ${{ steps.tf_out.outputs.api_lambda }}
+      worker_lambda: ${{ steps.tf_out.outputs.worker_lambda }}
+      api_url: ${{ steps.tf_out.outputs.api_url }}
+      frontend_bucket: ${{ steps.tf_out.outputs.frontend_bucket }}
+      cloudfront_id: ${{ steps.tf_out.outputs.cloudfront_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        if: ${{ inputs.apply_terraform }}
+        working-directory: infra/terraform
+        env:
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_redis_url: ${{ secrets.REDIS_URL }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_ollama_cloud_api_key: ${{ secrets.OLLAMA_CLOUD_API_KEY }}
+          TF_VAR_langfuse_public_key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          TF_VAR_langfuse_secret_key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: terraform apply -auto-approve -input=false
+
+      - name: Collect terraform outputs
+        id: tf_out
+        working-directory: infra/terraform
+        run: |
+          {
+            echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)"
+            echo "api_lambda=$(terraform output -raw api_lambda_function_name)"
+            echo "worker_lambda=$(terraform output -raw worker_lambda_function_name)"
+            echo "api_url=$(terraform output -raw api_url)"
+            echo "frontend_bucket=$(terraform output -raw frontend_bucket)"
+            echo "cloudfront_id=$(terraform output -raw frontend_cloudfront_id)"
+          } >> "$GITHUB_OUTPUT"
+
+  backend:
+    name: Build & deploy backend (Lambda)
+    needs: terraform
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push Docker image
+        env:
+          IMAGE: ${{ needs.terraform.outputs.ecr_repository_url }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            -f backend/Dockerfile.lambda \
+            -t "$IMAGE:$TAG" -t "$IMAGE:latest" \
+            --push \
+            ./backend
+
+      - name: Update API Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ needs.terraform.outputs.api_lambda }}" \
+            --image-uri "${{ needs.terraform.outputs.ecr_repository_url }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Update Worker Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ needs.terraform.outputs.worker_lambda }}" \
+            --image-uri "${{ needs.terraform.outputs.ecr_repository_url }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Wait for API Lambda update
+        run: aws lambda wait function-updated --function-name "${{ needs.terraform.outputs.api_lambda }}"
+
+      - name: Wait for Worker Lambda update
+        run: aws lambda wait function-updated --function-name "${{ needs.terraform.outputs.worker_lambda }}"
+
+  frontend:
+    name: Build & deploy frontend (S3 + CloudFront)
+    needs: [terraform, backend]
+    if: ${{ !inputs.skip_frontend }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build static export
+        working-directory: frontend
+        env:
+          NEXT_OUTPUT: export
+          NEXT_PUBLIC_API_BASE_URL: ${{ needs.terraform.outputs.api_url }}
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync frontend/out/ "s3://${{ needs.terraform.outputs.frontend_bucket }}/" \
+            --delete \
+            --cache-control "public, max-age=3600"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ needs.terraform.outputs.cloudfront_id }}" \
+            --paths "/*"
+
+  summary:
+    name: Summary
+    needs: [terraform, backend, frontend]
+    if: always() && needs.terraform.result == 'success' && needs.backend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print live URLs
+        run: |
+          {
+            echo "## InferOps stack is live"
+            echo ""
+            echo "- **API**:        ${{ needs.terraform.outputs.api_url }}"
+            echo "- **Frontend**:   open the CloudFront URL from terraform output \`frontend_url\`"
+            echo "- **Image tag**:  \`${{ needs.backend.outputs.image_tag }}\`"
+            echo ""
+            echo "Tear it down with the **Destroy stack** workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
