@@ -42,6 +42,18 @@ resource "aws_lambda_function" "api" {
       AWS_REGION_NAME       = var.aws_region
       ENVIRONMENT           = var.environment
       LOG_LEVEL             = "INFO"
+      # ── HuggingFace / sentence-transformers offline pinning ──
+      # The MiniLM model is baked into /var/task/hf_cache at image-build time.
+      # These env vars force the loader to read from there with zero network
+      # calls. Set here (function-level) rather than only in the Dockerfile
+      # because Docker ENV propagation across the AWS Lambda runtime has
+      # proven unreliable — function-level always wins.
+      HF_HOME                   = "/var/task/hf_cache"
+      HF_HUB_CACHE              = "/var/task/hf_cache/hub"
+      TRANSFORMERS_CACHE        = "/var/task/hf_cache"
+      SENTENCE_TRANSFORMERS_HOME = "/var/task/hf_cache"
+      HF_HUB_OFFLINE            = "1"
+      TRANSFORMERS_OFFLINE      = "1"
     }
   }
 
@@ -75,6 +87,13 @@ resource "aws_lambda_function" "worker" {
       LOG_LEVEL           = "INFO"
       # Worker doesn't run init_db itself — the API Lambda owns schema bootstrap.
       INFEROPS_SKIP_INIT_DB = "1"
+      # Same HF offline pinning as the API Lambda — same image, same risk.
+      HF_HOME                    = "/var/task/hf_cache"
+      HF_HUB_CACHE               = "/var/task/hf_cache/hub"
+      TRANSFORMERS_CACHE         = "/var/task/hf_cache"
+      SENTENCE_TRANSFORMERS_HOME = "/var/task/hf_cache"
+      HF_HUB_OFFLINE             = "1"
+      TRANSFORMERS_OFFLINE       = "1"
     }
   }
 

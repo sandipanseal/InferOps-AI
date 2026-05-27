@@ -28,6 +28,7 @@ service works against a fresh Supabase project with no migration step.
 """
 from __future__ import annotations
 
+import os
 import uuid
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
@@ -67,6 +68,9 @@ def _sync_dsn() -> str:
     return url
 
 
+_LAMBDA_LOCAL_MODEL_PATH = "/var/task/embedding_model"
+
+
 @lru_cache(maxsize=1)
 def get_embedding_model() -> "SentenceTransformer":
     # Deferred import — see top-of-file comment. lru_cache means torch +
@@ -74,6 +78,18 @@ def get_embedding_model() -> "SentenceTransformer":
     # RAG-touching request.
     from sentence_transformers import SentenceTransformer
 
+    # In Lambda the model is baked as a self-contained directory by the
+    # Dockerfile (`SentenceTransformer.save('/var/task/embedding_model')`).
+    # Passing that directory to SentenceTransformer triggers a pure local-
+    # file load with no HF Hub network/cache code path — sidestepping the
+    # version-skew across sentence-transformers / transformers /
+    # huggingface_hub cache-layout conventions that bit us before.
+    #
+    # Outside Lambda (local dev, CI) the directory doesn't exist and we
+    # fall back to the standard repo-id load against the writable user
+    # cache.
+    if os.path.isdir(_LAMBDA_LOCAL_MODEL_PATH):
+        return SentenceTransformer(_LAMBDA_LOCAL_MODEL_PATH)
     return SentenceTransformer(settings.embedding_model_name)
 
 

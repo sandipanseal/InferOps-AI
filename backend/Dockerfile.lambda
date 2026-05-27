@@ -28,6 +28,28 @@ RUN dnf install -y gcc gcc-c++ make python3-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
+# Pre-bake HuggingFace / sentence-transformers caches into the image at a
+# path that survives into runtime.
+#
+# Lambda overrides HOME to /home/sbx_user* (empty and read-only), so anything
+# the build-time `pip install` step downloaded into /root/.cache is invisible
+# to the running container. When the first request constructs
+# SentenceTransformer(), the library finds no local cache, falls back to
+# downloading from huggingface.co, then tries to write the model into HOME —
+# which fails with `OSError: [Errno 30] Read-only file system`.
+#
+# Setting HF_HOME under /var/task (where the image is extracted, and the only
+# place where build-time artifacts persist read-only into the container) lets
+# the build-time download survive into runtime, and the ENV propagates to the
+# Lambda invocation environment so the model loads instantly from disk on
+# every cold start with zero network calls.
+ENV HF_HOME=/var/task/hf_cache \
+    HF_HUB_CACHE=/var/task/hf_cache/hub \
+    TRANSFORMERS_CACHE=/var/task/hf_cache \
+    SENTENCE_TRANSFORMERS_HOME=/var/task/hf_cache \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 COPY pyproject.toml ./
 COPY app ./app
 COPY evals ./evals
@@ -35,9 +57,35 @@ COPY configs ./configs
 COPY lambda_handler.py ./
 COPY sqs_worker_handler.py ./
 
+# Install deps, then bake the embedding model AS A SELF-CONTAINED DIRECTORY
+# at /var/task/embedding_model. We temporarily clear the OFFLINE flags so the
+# download is allowed during build.
+#
+# Why save() instead of relying on the HF Hub cache: sentence-transformers /
+# transformers / huggingface_hub each have their own cache-layout convention
+# (legacy flat layout, HF Hub `models--<org>--<model>/snapshots/<hash>/`,
+# TRANSFORMERS_CACHE vs HF_HUB_CACHE), and they disagree across minor versions.
+# At runtime the library went looking for files in a path the build had not
+# written to. `SentenceTransformer.save(path)` writes a complete bundle —
+# modules.json, the underlying transformer, the pooling module, the tokenizer
+# — into one fixed directory. Passing that directory back to
+# `SentenceTransformer(path)` does ZERO HF Hub network/cache lookups; it just
+# reads the files from disk. No env-var dance, no version-skew surprises.
+#
+# Hard `test -d` after the save fails the build loudly if the bundle wasn't
+# written, so a broken image can never ship.
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir . \
-    && python -c "from sentence_transformers import SentenceTransformer; \
-       SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+    && HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+m.save('/var/task/embedding_model'); \
+print('Saved bundle to /var/task/embedding_model'); \
+print('Test encode shape:', m.encode('hello', normalize_embeddings=True).shape)" \
+    && test -f /var/task/embedding_model/modules.json \
+    && test -d /var/task/embedding_model/0_Transformer \
+    && echo "=== Baked embedding model bundle ===" \
+    && ls -la /var/task/embedding_model/ \
+    && ls -la /var/task/embedding_model/0_Transformer/
 
 CMD ["lambda_handler.handler"]
