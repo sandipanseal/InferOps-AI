@@ -17,11 +17,15 @@ resource "aws_lambda_function" "api" {
 
   role        = aws_iam_role.lambda_exec.arn
   memory_size = 2048
-  # 60s, not 30s: the first chat / RAG call on a freshly-spun container has
-  # to import torch + load the SentenceTransformer model (~25-35s before
-  # any provider is even contacted). 30s wasn't enough; 60s gives margin
-  # without uncapping. Subsequent warm requests finish in <500ms regardless.
-  timeout     = 60
+  # 120s ceiling for the *function* timeout. Lambda's init phase is capped
+  # at 10s and we already keep it under 2s (torch is NOT imported at module
+  # load). The first chat / RAG request on a freshly-spun warm container
+  # then has to: load torch (~5s), load the SentenceTransformer model from
+  # the pre-baked image cache (~3s), run first inference / graph compile
+  # (~5-10s), pgvector connect (~1s), LLM provider call (1-30s depending on
+  # the route). 60s was too tight when all of those compound; 120s comfortably
+  # covers the worst case. Warm requests still finish in <500ms.
+  timeout     = 120
 
   environment {
     variables = {
